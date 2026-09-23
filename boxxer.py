@@ -10,6 +10,12 @@ import xml.etree.ElementTree as ET
 
 from panelgraph import DEFAULT_NEAR, PanelGraph
 
+PRESET_REGISTRY = Path(__file__).parent / "presets" / "presets.json"
+
+
+class InteractiveCancelled(Exception):
+    pass
+
 
 def paths_alias(first, second):
     if first.resolve() == second.resolve():
@@ -24,6 +30,243 @@ def temporary_output(target):
     handle = tempfile.NamedTemporaryFile(prefix=f".{target.name}.", dir=target.parent, delete=False)
     handle.close()
     return Path(handle.name)
+
+
+def validate_resize_paths(input_path, output, source_output=None):
+    if paths_alias(output, input_path):
+        raise ValueError("Input and output paths must differ")
+    if source_output is not None and (paths_alias(source_output, input_path) or
+                                      paths_alias(source_output, output)):
+        raise ValueError("Input, compiled output, and source output paths must differ")
+    if output.is_dir() or (source_output is not None and source_output.is_dir()):
+        raise ValueError("Output paths must not be directories")
+
+
+def replace_outputs(replacements):
+    backups = {}
+    installed = []
+    try:
+        for _, target in replacements:
+            if target.exists():
+                backup = temporary_output(target)
+                backup.unlink()
+                os.replace(target, backup)
+                backups[target] = backup
+        for temporary, target in replacements:
+            os.replace(temporary, target)
+            installed.append(target)
+    except Exception:
+        for target in installed:
+            target.unlink(missing_ok=True)
+        for target, backup in backups.items():
+            os.replace(backup, target)
+        raise
+    finally:
+        for backup in backups.values():
+            backup.unlink(missing_ok=True)
+
+
+def resize_and_compile(graph, input_path, output, source_output, resize_options, *,
+                       thickness, fold_offset, lid_clearance):
+    validate_resize_paths(input_path, output, source_output)
+    resized = graph.resized(**resize_options)
+    compiled_temp = temporary_output(output)
+    source_temp = None
+    try:
+        source_temp = temporary_output(source_output) if source_output is not None else None
+        report = resized.compile(compiled_temp, thickness=thickness, fold_offset=fold_offset,
+                                 lid_clearance=lid_clearance)
+        if source_temp is not None:
+            source_temp.write_bytes(resized.source_bytes)
+        replacements = [(compiled_temp, output)]
+        if source_temp is not None:
+            replacements.append((source_temp, source_output))
+        replace_outputs(replacements)
+        report["output"] = str(output)
+        return report
+    finally:
+        compiled_temp.unlink(missing_ok=True)
+        if source_temp is not None:
+            source_temp.unlink(missing_ok=True)
+
+
+def load_presets(registry=PRESET_REGISTRY):
+    registry = Path(registry)
+    try:
+        data = json.loads(registry.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Preset registry contains invalid JSON: {registry}") from exc
+    if not isinstance(data, list):
+        raise ValueError("Preset registry must contain a JSON array")
+    presets = []
+    for index, item in enumerate(data, 1):
+        if not isinstance(item, dict) or not isinstance(item.get("name"), str) or not isinstance(item.get("source"), str):
+            raise ValueError(f"Preset {index} requires string name and source properties")
+        source = (registry.parent / item["source"]).resolve()
+        if not source.is_file():
+            raise ValueError(f"Preset source does not exist: {source}")
+        preset = dict(item)
+        preset["source"] = source
+        for key in ("thickness", "fold_offset", "lid_clearance"):
+            value = preset.get(key)
+            if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float)) or
+                                      not math.isfinite(value)):
+                raise ValueError(f"Preset {index} {key} must be a finite number")
+        if ((preset.get("thickness") is not None and preset["thickness"] < 0) or
+                (preset.get("lid_clearance") is not None and preset["lid_clearance"] < 0)):
+            raise ValueError(f"Preset {index} thickness and lid_clearance must be nonnegative")
+        presets.append(preset)
+    return presets
+
+
+def prompt_text(label, default=None, *, input_fn=input):
+    suffix = f" [{default}]" if default not in (None, "") else ""
+    try:
+        value = input_fn(f"{label}{suffix}: ").strip()
+    except EOFError as exc:
+        raise InteractiveCancelled from exc
+    if value.lower() in ("q", "quit"):
+        raise InteractiveCancelled
+    return str(default) if not value and default is not None else value
+
+
+def prompt_float(label, default, *, minimum=None, input_fn=input, print_fn=print):
+    while True:
+        raw = prompt_text(label, f"{default:g}", input_fn=input_fn)
+        try:
+            value = float(raw)
+        except ValueError:
+            print_fn("Enter a number, or q to cancel.")
+            continue
+        if not math.isfinite(value) or (minimum is not None and value < minimum):
+            requirement = f"a number of at least {minimum:g}" if minimum is not None else "a finite number"
+            print_fn(f"Enter {requirement}.")
+            continue
+        return value
+
+
+def prompt_yes_no(label, default=True, *, input_fn=input, print_fn=print):
+    suffix = "Y/n" if default else "y/N"
+    while True:
+        value = prompt_text(f"{label} [{suffix}]", input_fn=input_fn).lower()
+        if not value:
+            return default
+        if value in ("y", "yes"):
+            return True
+        if value in ("n", "no"):
+            return False
+        print_fn("Enter y or n, or q to cancel.")
+
+
+def choose_interactive_source(input_path, registry, *, input_fn=input, print_fn=print):
+    if input_path is not None:
+        return Path(input_path), {}
+    presets = load_presets(registry)
+    print_fn("Available presets:")
+    for index, preset in enumerate(presets, 1):
+        description = f" - {preset['description']}" if preset.get("description") else ""
+        print_fn(f"  {index}. {preset['name']}{description}")
+    print_fn("Enter a preset number or a path to another SVG.")
+    while True:
+        selection = prompt_text("Source", input_fn=input_fn)
+        if selection.isdigit() and 1 <= int(selection) <= len(presets):
+            preset = presets[int(selection)-1]
+            return preset["source"], preset
+        source = Path(selection).expanduser()
+        if source.is_file():
+            return source, {}
+        print_fn(f"SVG not found: {source}")
+
+
+def interactive_session(input_path=None, registry=PRESET_REGISTRY, *, input_fn=input, print_fn=print):
+    print_fn("Boxxer interactive resize")
+    source, preset = choose_interactive_source(input_path, registry, input_fn=input_fn, print_fn=print_fn)
+    graph = PanelGraph(source)
+    if graph.near_seams and not graph.snap_near:
+        print_fn(f"Found {len(graph.near_seams)} near-coincident seam pair(s).")
+        if not prompt_yes_no("Repair these seams", input_fn=input_fn, print_fn=print_fn):
+            raise InteractiveCancelled
+        graph = PanelGraph(source, graph.near, True)
+    resize_model = graph._resize_structure()
+    if resize_model["status"] != "supported":
+        raise ValueError("Cannot resize this panel graph: "+resize_model["reason"])
+    dimensions = resize_model["dimensions"]
+    print_fn(f"Detected {resize_model['kind']} box net.")
+    print_fn("Current dimensions: "+", ".join(
+        f"{key.replace('_', ' ')} {value:.3f} mm" for key, value in dimensions.items()))
+
+    resize_options = {
+        "width": prompt_float("Width (mm)", dimensions["width"], minimum=1.0000001,
+                              input_fn=input_fn, print_fn=print_fn),
+        "length": prompt_float("Length (mm)", dimensions["length"], minimum=1.0000001,
+                               input_fn=input_fn, print_fn=print_fn),
+    }
+    if resize_model["kind"] == "single":
+        resize_options["height"] = prompt_float(
+            "Height (mm)", dimensions["height"], minimum=1.0000001,
+            input_fn=input_fn, print_fn=print_fn)
+    else:
+        resize_options["base_height"] = prompt_float(
+            "Base height (mm)", dimensions["base_height"], minimum=1.0000001,
+            input_fn=input_fn, print_fn=print_fn)
+        resize_options["lid_height"] = prompt_float(
+            "Lid height (mm)", dimensions["lid_height"], minimum=1.0000001,
+            input_fn=input_fn, print_fn=print_fn)
+        if resize_model["kind"] == "connected":
+            resize_options["connector_depth"] = prompt_float(
+                "Connector depth (mm)", dimensions["connector_depth"], minimum=1.0000001,
+                input_fn=input_fn, print_fn=print_fn)
+
+    stored = graph.compiled_settings
+    thickness_default = stored.get("thickness")
+    if thickness_default is None:
+        thickness_default = preset.get("thickness")
+    thickness_default = 0.5 if thickness_default is None else thickness_default
+    fold_default = stored.get("fold_offset")
+    if fold_default is None:
+        fold_default = preset.get("fold_offset")
+    fold_default = 0.0 if fold_default is None else fold_default
+    clearance_default = stored.get("lid_clearance")
+    if clearance_default is None:
+        clearance_default = preset.get("lid_clearance")
+    clearance_default = 0.0 if clearance_default is None else clearance_default
+    thickness = prompt_float("Material thickness (mm)", thickness_default, minimum=0,
+                             input_fn=input_fn, print_fn=print_fn)
+    fold_offset = prompt_float("Fold offset (mm)", fold_default,
+                               input_fn=input_fn, print_fn=print_fn)
+    lid_clearance = 0.0
+    if resize_model["kind"] != "single":
+        lid_clearance = prompt_float("Lid clearance (mm)", clearance_default, minimum=0,
+                                     input_fn=input_fn, print_fn=print_fn)
+
+    stem = Path(graph.source_name).stem
+    output = Path(prompt_text("Compiled output", f"{stem}-compiled.svg", input_fn=input_fn)).expanduser()
+    source_value = prompt_text("Editable source output (blank for none)", input_fn=input_fn)
+    source_output = Path(source_value).expanduser() if source_value else None
+    validate_resize_paths(source, output, source_output)
+    existing = [path for path in (output, source_output) if path is not None and path.exists()]
+    if existing and not prompt_yes_no(
+            "Overwrite "+", ".join(str(path) for path in existing), default=False,
+            input_fn=input_fn, print_fn=print_fn):
+        raise InteractiveCancelled
+
+    print_fn("\nResize summary:")
+    for key, value in resize_options.items():
+        print_fn(f"  {key.replace('_', ' ').title()}: {value:g} mm")
+    print_fn(f"  Material thickness: {thickness:g} mm")
+    print_fn(f"  Fold offset: {fold_offset:g} mm")
+    if resize_model["kind"] != "single":
+        print_fn(f"  Lid clearance: {lid_clearance:g} mm")
+    print_fn(f"  Compiled output: {output}")
+    if source_output is not None:
+        print_fn(f"  Editable source: {source_output}")
+    if not prompt_yes_no("Create these files", input_fn=input_fn, print_fn=print_fn):
+        raise InteractiveCancelled
+    report = resize_and_compile(
+        graph, source, output, source_output, resize_options,
+        thickness=thickness, fold_offset=fold_offset, lid_clearance=lid_clearance)
+    print_report(report)
+    return report
 
 
 def print_report(report):
@@ -49,8 +292,11 @@ def print_report(report):
             print(f"  {contact['tab']} → {contact['receiver']} via {contact['fold']} ({contact['placement']})")
     structure = report.get("structure", {})
     if structure.get("status") == "inferred":
-        print(f"Connected enclosure: top {structure['top']} outside bottom {structure['bottom']}; "
-              f"connector {', '.join(structure['shared_connector'])}")
+        if structure.get("layout") == "separate":
+            print(f"Separate enclosure: upper lid {structure['top']}; lower base {structure['bottom']}")
+        else:
+            print(f"Connected enclosure: top {structure['top']} outside bottom {structure['bottom']}; "
+                  f"connector {', '.join(structure['shared_connector'])}")
     resizing = report.get("resizing", {})
     if resizing.get("status") == "supported":
         dimensions = ", ".join(f"{key.replace('_', ' ')} {value:.3f} mm"
@@ -107,14 +353,18 @@ def main():
             command.add_argument("--connector-depth", type=float, help="Connected hinge-panel depth in mm")
             command.add_argument("--source-output", type=Path,
                                  help="Also write the editable resized panel-source SVG")
+    interactive = subparsers.add_parser("interactive", help="Guided resize using a preset or SVG path")
+    interactive.add_argument("input", nargs="?", type=Path,
+                             help="SVG to resize; omit to choose a preset or enter a path")
+    interactive.add_argument("--presets", type=Path, default=PRESET_REGISTRY,
+                             help="Preset registry JSON path")
     args = parser.parse_args()
     try:
-        if args.command in ("compile", "resize") and paths_alias(args.output, args.input):
+        if args.command == "interactive":
+            report = interactive_session(args.input, args.presets)
+            return 1 if report["warnings"] else 0
+        if args.command == "compile" and paths_alias(args.output, args.input):
             raise ValueError("Input and output paths must differ")
-        if args.command == "resize" and args.source_output is not None:
-            if (paths_alias(args.source_output, args.input) or
-                    paths_alias(args.source_output, args.output)):
-                raise ValueError("Input, compiled output, and source output paths must differ")
         if args.near_distance is not None and (not math.isfinite(args.near_distance) or args.near_distance <= 0):
             raise ValueError("Near-edge distance must be finite and positive")
         graph = PanelGraph(args.input, args.near_distance, args.snap_near)
@@ -126,24 +376,12 @@ def main():
             report = graph.report(thickness, fold_offset, lid_clearance)
         else:
             if args.command == "resize":
-                graph = graph.resized(width=args.width, length=args.length, height=args.height,
-                                      base_height=args.base_height, lid_height=args.lid_height,
-                                      connector_depth=args.connector_depth)
-                compiled_temp = temporary_output(args.output)
-                source_temp = temporary_output(args.source_output) if args.source_output is not None else None
-                try:
-                    report = graph.compile(compiled_temp, thickness=thickness, fold_offset=fold_offset,
-                                           lid_clearance=lid_clearance)
-                    if source_temp is not None:
-                        source_temp.write_bytes(graph.source_bytes)
-                    os.replace(compiled_temp, args.output)
-                    if source_temp is not None:
-                        os.replace(source_temp, args.source_output)
-                    report["output"] = str(args.output)
-                finally:
-                    compiled_temp.unlink(missing_ok=True)
-                    if source_temp is not None:
-                        source_temp.unlink(missing_ok=True)
+                report = resize_and_compile(
+                    graph, args.input, args.output, args.source_output,
+                    {"width": args.width, "length": args.length, "height": args.height,
+                     "base_height": args.base_height, "lid_height": args.lid_height,
+                     "connector_depth": args.connector_depth},
+                    thickness=thickness, fold_offset=fold_offset, lid_clearance=lid_clearance)
             else:
                 report = graph.compile(args.output, thickness=thickness, fold_offset=fold_offset,
                                        lid_clearance=lid_clearance)
@@ -152,6 +390,12 @@ def main():
         else:
             print_report(report)
         return 1 if report["warnings"] else 0
+    except InteractiveCancelled:
+        print("Cancelled.")
+        return 0
+    except KeyboardInterrupt:
+        print("\nCancelled.", file=sys.stderr)
+        return 130
     except (ValueError, OSError, ET.ParseError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2

@@ -18,7 +18,7 @@ import xml.etree.ElementTree as ET
 
 import numpy as np
 from shapely.geometry import LineString, MultiPoint, Point, Polygon
-from shapely.ops import nearest_points
+from shapely.ops import nearest_points, unary_union
 from svgpathtools import Arc, CubicBezier, Line, Path, QuadraticBezier, parse_path
 from svgpathtools.path import transform as transform_path
 
@@ -525,15 +525,87 @@ class PanelGraph:
         return adjacency
 
     def _infer_structure(self):
-        """Recognize a top and bottom shell joined by a simple hinge spine."""
-        if len(self.components) != 1:
-            return {"status": "none"}
+        """Recognize connected or separate top and bottom box shells."""
         by_id = {p.id: p for p in self.panels}
         adjacency = self._adjacency()
-        largest = max(p.polygon.area for p in self.panels)
-        tolerance = max(self.near*self.near, largest*1e-6)
-        principals = [p.id for p in self.panels
-                      if len(adjacency[p.id]) >= 3 and abs(p.polygon.area-largest) <= tolerance]
+
+        def principal_candidates(component):
+            largest = max(by_id[panel_id].polygon.area for panel_id in component)
+            tolerance = max(self.near*self.near, largest*1e-6)
+            return [panel_id for panel_id in component if len(adjacency[panel_id]) >= 3 and
+                    abs(by_id[panel_id].polygon.area-largest) <= tolerance]
+
+        def separate_shell(component):
+            candidates = principal_candidates(component)
+            if len(candidates) != 1:
+                return None
+            principal = candidates[0]
+            panel = by_id[principal]
+            if (len(panel.path) != 4 or any(not isinstance(segment, Line) for segment in panel.path) or
+                    any(abs(segment.end.real-segment.start.real) > self.near and
+                        abs(segment.end.imag-segment.start.imag) > self.near for segment in panel.path)):
+                return None
+            x0, y0, x1, y1 = panel.polygon.bounds
+            if abs(panel.polygon.area-(x1-x0)*(y1-y0)) > max(self.near**2, panel.polygon.area*1e-6):
+                return None
+            wall_seams = [(neighbor, seam) for neighbor, seam in adjacency[principal]
+                          if isinstance(seam.curve, Line)]
+            if len(wall_seams) != 4 or len(adjacency[principal]) != 4:
+                return None
+            labels = set()
+            walls = []
+            for wall_id, seam in wall_seams:
+                wall = by_id[wall_id].polygon.centroid
+                dx, dy = wall.x-panel.polygon.centroid.x, wall.y-panel.polygon.centroid.y
+                label = (("right" if dx > 0 else "left") if abs(dx) > abs(dy)
+                         else ("bottom" if dy > 0 else "top"))
+                expected_length = (y1-y0) if label in {"left", "right"} else (x1-x0)
+                if abs(seam.length-expected_length) > self.near:
+                    return None
+                labels.add(label)
+                walls.append(wall_id)
+            if labels != {"left", "right", "top", "bottom"}:
+                return None
+            edge_count = sum(1 for seam in self.seams
+                             if seam.panel_a in component and seam.panel_b in component)
+            if edge_count != len(component)-1:
+                return None
+            wall_set = set(walls)
+            if any(len(adjacency[panel_id]) != 1 or adjacency[panel_id][0][0] not in wall_set
+                   for panel_id in component if panel_id != principal and panel_id not in wall_set):
+                return None
+            return principal, (x1-x0, y1-y0)
+
+        if len(self.components) == 2:
+            shells = [separate_shell(component) for component in self.components]
+            if any(shell is None for shell in shells):
+                return {"status": "none"}
+            first, first_size = shells[0]
+            second, second_size = shells[1]
+            if any(abs(a-b) > self.near for a, b in zip(first_size, second_size)):
+                return {"status": "none"}
+            first_y = by_id[first].polygon.centroid.y
+            second_y = by_id[second].polygon.centroid.y
+            if abs(first_y-second_y) <= self.near:
+                return {"status": "ambiguous", "reason": "principal faces have the same page Y position"}
+            top, bottom = (first, second) if first_y < second_y else (second, first)
+            top_shell = next(component for component in self.components if top in component)
+            bottom_shell = next(component for component in self.components if bottom in component)
+            roles = {panel_id: "top_shell" for panel_id in top_shell}
+            roles.update({panel_id: "bottom_shell" for panel_id in bottom_shell})
+            roles[top], roles[bottom] = "principal_top", "principal_bottom"
+            contact_domains = {panel_id: ["top"] for panel_id in top_shell}
+            contact_domains.update({panel_id: ["bottom"] for panel_id in bottom_shell})
+            return {"status": "inferred", "layout": "separate",
+                    "method": "two-shell-components-page-y-v1", "top": top, "bottom": bottom,
+                    "path": [], "shared_connector": [], "top_shell": top_shell,
+                    "bottom_shell": bottom_shell, "panel_roles": roles,
+                    "contact_domains": contact_domains,
+                    "ordering": "svg-page-y-down", "top_outside": True}
+
+        if len(self.components) != 1:
+            return {"status": "none"}
+        principals = principal_candidates(self.components[0])
         if len(principals) != 2:
             return {"status": "none"}
         first, second = principals
@@ -583,7 +655,8 @@ class PanelGraph:
         contact_domains = {panel_id: ["top"] for panel_id in top_shell}
         contact_domains.update({panel_id: ["bottom"] for panel_id in bottom_shell})
         contact_domains.update({panel_id: ["top", "bottom"] for panel_id in connector})
-        return {"status": "inferred", "method": "largest-faces-clean-spine-page-y-v1",
+        return {"status": "inferred", "layout": "connected",
+                "method": "largest-faces-clean-spine-page-y-v1",
                 "top": top, "bottom": bottom, "path": path, "shared_connector": connector,
                 "top_shell": top_shell, "bottom_shell": bottom_shell, "panel_roles": roles,
                 "contact_domains": contact_domains,
@@ -808,8 +881,6 @@ class PanelGraph:
 
     def _resize_structure(self):
         """Describe the axis-aligned box-net subset that can be resized."""
-        if len(self.components) != 1:
-            return {"status": "unsupported", "reason": "resizing requires one connected panel graph"}
         by_id = {panel.id: panel for panel in self.panels}
         adjacency = self._adjacency()
 
@@ -837,14 +908,15 @@ class PanelGraph:
             return max(distances)
 
         if self.structure.get("status") == "inferred":
+            layout = self.structure.get("layout", "connected")
             top, bottom = self.structure["top"], self.structure["bottom"]
             top_bounds, bottom_bounds = rectangle(by_id[top]), rectangle(by_id[bottom])
             if top_bounds is None or bottom_bounds is None:
                 return {"status": "unsupported", "reason": "principal faces must be axis-aligned rectangles"}
             connector_ids = self.structure["shared_connector"]
-            if len(connector_ids) != 1:
+            if layout == "connected" and len(connector_ids) != 1:
                 return {"status": "unsupported", "reason": "resizing requires one shared connector panel"}
-            connector = connector_ids[0]
+            connector = connector_ids[0] if connector_ids else None
             top_walls = [panel_id for panel_id, _ in adjacency[top] if panel_id != connector]
             bottom_walls = [panel_id for panel_id, _ in adjacency[bottom] if panel_id != connector]
             try:
@@ -858,24 +930,27 @@ class PanelGraph:
             if (max(top_heights)-min(top_heights) > self.near or
                     max(bottom_heights)-min(bottom_heights) > self.near):
                 return {"status": "unsupported", "reason": "each shell must have one uniform wall height"}
-            top_seam = next(seam for neighbor, seam in adjacency[top] if neighbor == connector)
-            bottom_seam = next(seam for neighbor, seam in adjacency[bottom] if neighbor == connector)
-            connector_depth = abs(complex(*by_id[top].polygon.centroid.coords[0])-complex(
-                *by_id[bottom].polygon.centroid.coords[0]))-(top_bounds[3]-top_bounds[1])/2-(bottom_bounds[3]-bottom_bounds[1])/2
-            connector_depth = abs(connector_depth)
-            if not isinstance(top_seam.curve, Line) or not isinstance(bottom_seam.curve, Line):
-                return {"status": "unsupported", "reason": "connector folds must be straight"}
-            return {"status": "supported", "kind": "connected", "top": top, "base": bottom,
+            dimensions = {"width": bottom_bounds[2]-bottom_bounds[0],
+                          "length": bottom_bounds[3]-bottom_bounds[1],
+                          "base_height": bottom_height, "lid_height": top_height,
+                          "lid_width": top_bounds[2]-top_bounds[0],
+                          "lid_length": top_bounds[3]-top_bounds[1]}
+            if connector is not None:
+                top_seam = next(seam for neighbor, seam in adjacency[top] if neighbor == connector)
+                bottom_seam = next(seam for neighbor, seam in adjacency[bottom] if neighbor == connector)
+                connector_depth = abs(complex(*by_id[top].polygon.centroid.coords[0])-complex(
+                    *by_id[bottom].polygon.centroid.coords[0]))-(top_bounds[3]-top_bounds[1])/2-(bottom_bounds[3]-bottom_bounds[1])/2
+                dimensions["connector_depth"] = abs(connector_depth)
+                if not isinstance(top_seam.curve, Line) or not isinstance(bottom_seam.curve, Line):
+                    return {"status": "unsupported", "reason": "connector folds must be straight"}
+            return {"status": "supported", "kind": layout, "top": top, "base": bottom,
                     "connector": connector, "top_shell": self.structure["top_shell"],
                     "base_shell": self.structure["bottom_shell"],
                     "top_bounds": list(top_bounds), "base_bounds": list(bottom_bounds),
-                    "dimensions": {"width": bottom_bounds[2]-bottom_bounds[0],
-                                   "length": bottom_bounds[3]-bottom_bounds[1],
-                                   "base_height": bottom_height, "lid_height": top_height,
-                                   "lid_width": top_bounds[2]-top_bounds[0],
-                                   "lid_length": top_bounds[3]-top_bounds[1],
-                                   "connector_depth": connector_depth}}
+                    "dimensions": dimensions}
 
+        if len(self.components) != 1:
+            return {"status": "unsupported", "reason": "cannot identify two box shells"}
         largest = max(panel.polygon.area for panel in self.panels)
         candidates = [panel for panel in self.panels if len(adjacency[panel.id]) >= 3 and
                       abs(panel.polygon.area-largest) <= max(self.near**2, largest*1e-6)]
@@ -958,7 +1033,9 @@ class PanelGraph:
         if model["status"] != "supported":
             raise ValueError("Cannot resize this panel graph: "+model["reason"])
         if model["kind"] == "single" and any(value is not None for value in (base_height, lid_height, connector_depth)):
-            raise ValueError("Base, lid, and connector dimensions require a connected enclosure")
+            raise ValueError("Base, lid, and connector dimensions require a two-shell enclosure")
+        if model["kind"] == "separate" and connector_depth is not None:
+            raise ValueError("Connector depth requires a connected enclosure")
 
         by_id = {panel.id: panel for panel in self.panels}
 
@@ -1024,40 +1101,49 @@ class PanelGraph:
             target_lid_height = lid_height or target_lid_height
             target_lid_width = old["lid_width"]+target_width-old["width"]
             target_lid_length = old["lid_length"]+target_length-old["length"]
-            target_connector = connector_depth or old["connector_depth"]+target_base_height-old["base_height"]
-            if min(target_lid_width, target_lid_length, target_connector) <= 1:
+            target_connector = None
+            if model["kind"] == "connected":
+                target_connector = connector_depth or old["connector_depth"]+target_base_height-old["base_height"]
+            if min(target_lid_width, target_lid_length) <= 1 or (target_connector is not None and target_connector <= 1):
                 raise ValueError("Requested dimensions eliminate the lid or connector")
             top_mapper = shell_mapper(model["top_bounds"], old["lid_height"], target_lid_height,
                                       target_lid_width, target_lid_length, model["top_shell"])
-            base_shift = target_length-old["length"]+target_connector-old["connector_depth"]
+            if model["kind"] == "connected":
+                base_shift = target_length-old["length"]+target_connector-old["connector_depth"]
+            else:
+                base_shift = (target_length-old["length"]+
+                              target_lid_height-old["lid_height"]+
+                              target_base_height-old["base_height"])
             base_mapper = shell_mapper(model["base_bounds"], old["base_height"], target_base_height,
                                        target_width, target_length, model["base_shell"], base_shift)
             mappers.update({panel_id: top_mapper for panel_id in model["top_shell"]})
             mappers.update({panel_id: base_mapper for panel_id in model["base_shell"]})
-            top_bounds, base_bounds = model["top_bounds"], model["base_bounds"]
-            source_top_y, source_base_y = top_bounds[3], base_bounds[1]
-            mapped_top_y = top_mapper(complex((top_bounds[0]+top_bounds[2])/2, source_top_y)).imag
-            mapped_base_y = base_mapper(complex((base_bounds[0]+base_bounds[2])/2, source_base_y)).imag
+            if model["kind"] == "connected":
+                top_bounds, base_bounds = model["top_bounds"], model["base_bounds"]
+                source_top_y, source_base_y = top_bounds[3], base_bounds[1]
+                mapped_top_y = top_mapper(complex((top_bounds[0]+top_bounds[2])/2, source_top_y)).imag
+                mapped_base_y = base_mapper(complex((base_bounds[0]+base_bounds[2])/2, source_base_y)).imag
 
-            def connector_mapper(point):
-                depth = (point.imag-source_top_y)/(source_base_y-source_top_y)
-                source_left = top_bounds[0]+(base_bounds[0]-top_bounds[0])*depth
-                source_right = top_bounds[2]+(base_bounds[2]-top_bounds[2])*depth
-                along = (point.real-source_left)/(source_right-source_left)
-                top_left = top_mapper(complex(top_bounds[0], source_top_y)).real
-                top_right = top_mapper(complex(top_bounds[2], source_top_y)).real
-                base_left = base_mapper(complex(base_bounds[0], source_base_y)).real
-                base_right = base_mapper(complex(base_bounds[2], source_base_y)).real
-                target_left = top_left+(base_left-top_left)*depth
-                target_right = top_right+(base_right-top_right)*depth
-                return complex(target_left+(target_right-target_left)*along,
-                               mapped_top_y+(mapped_base_y-mapped_top_y)*depth)
+                def connector_mapper(point):
+                    depth = (point.imag-source_top_y)/(source_base_y-source_top_y)
+                    source_left = top_bounds[0]+(base_bounds[0]-top_bounds[0])*depth
+                    source_right = top_bounds[2]+(base_bounds[2]-top_bounds[2])*depth
+                    along = (point.real-source_left)/(source_right-source_left)
+                    top_left = top_mapper(complex(top_bounds[0], source_top_y)).real
+                    top_right = top_mapper(complex(top_bounds[2], source_top_y)).real
+                    base_left = base_mapper(complex(base_bounds[0], source_base_y)).real
+                    base_right = base_mapper(complex(base_bounds[2], source_base_y)).real
+                    target_left = top_left+(base_left-top_left)*depth
+                    target_right = top_right+(base_right-top_right)*depth
+                    return complex(target_left+(target_right-target_left)*along,
+                                   mapped_top_y+(mapped_base_y-mapped_top_y)*depth)
 
-            mappers[model["connector"]] = connector_mapper
+                mappers[model["connector"]] = connector_mapper
             effective = {"width": target_width, "length": target_length,
                          "base_height": target_base_height, "lid_height": target_lid_height,
-                         "lid_width": target_lid_width, "lid_length": target_lid_length,
-                         "connector_depth": target_connector}
+                         "lid_width": target_lid_width, "lid_length": target_lid_length}
+            if target_connector is not None:
+                effective["connector_depth"] = target_connector
 
         seam_by_id = {seam.id: seam for seam in self.seams}
         for contact in self.contacts:
@@ -1067,6 +1153,19 @@ class PanelGraph:
             transform = affine_between_segments(
                 seam.start, seam.end, parent_mapper(seam.start), parent_mapper(seam.end))
             mappers[contact.tab] = lambda point, transform=transform: transform_point(point, transform)
+
+        if model["kind"] == "separate":
+            source_top_max = max(by_id[panel_id].polygon.bounds[3] for panel_id in model["top_shell"])
+            source_base_min = min(by_id[panel_id].polygon.bounds[1] for panel_id in model["base_shell"])
+            target_top_max = max(self._mapped_path(by_id[panel_id].path, mappers[panel_id]).bbox()[3]
+                                 for panel_id in model["top_shell"])
+            target_base_min = min(self._mapped_path(by_id[panel_id].path, mappers[panel_id]).bbox()[2]
+                                  for panel_id in model["base_shell"])
+            gap_adjustment = (source_base_min-source_top_max)-(target_base_min-target_top_max)
+            if abs(gap_adjustment) > NUMERIC_EPS:
+                for panel_id in model["base_shell"]:
+                    mapper = mappers[panel_id]
+                    mappers[panel_id] = lambda point, mapper=mapper: mapper(point)+complex(0, gap_adjustment)
 
         records = []
         owners = {}
@@ -1107,7 +1206,7 @@ class PanelGraph:
         resized.resize_metadata = {"version": 1, "requested": requested,
                                    "source_dimensions": model["dimensions"],
                                    "effective_dimensions": effective,
-                                   "reference_shell": "base" if model["kind"] == "connected" else "single",
+                                   "reference_shell": "single" if model["kind"] == "single" else "base",
                                    "feature_policy": "fixed-physical-size"}
         return resized
 
@@ -1143,13 +1242,15 @@ class PanelGraph:
                               ([f"{len(self.overlaps)} panel overlap(s) must be resolved before compiling."] if self.overlaps else [])+
                                self.contact_warnings)}
 
-    def _side_label(self, principal_id, wall_id):
+    def _side_label(self, principal_id, wall_id, layout="connected"):
         by_id = {p.id: p for p in self.panels}
         principal = by_id[principal_id].polygon.centroid
         wall = by_id[wall_id].polygon.centroid
         dx, dy = wall.x-principal.x, wall.y-principal.y
         if abs(dx) > abs(dy):
             return "right" if dx > 0 else "left"
+        if layout == "separate":
+            return "bottom" if dy > 0 else "top"
         return "far"
 
     def lid_fit_plan(self, thickness=None, lid_clearance=0.0):
@@ -1158,17 +1259,18 @@ class PanelGraph:
             raise ValueError("Lid clearance must be finite and nonnegative")
         if self.structure["status"] != "inferred":
             if lid_clearance > NUMERIC_EPS:
-                raise ValueError("Lid clearance requires an inferred connected top/bottom enclosure")
+                raise ValueError("Lid clearance requires an inferred top/bottom enclosure")
             return {"status": "none", "clearance": lid_clearance, "walls": []}
-        if len(self.structure["shared_connector"]) != 1:
+        layout = self.structure.get("layout", "connected")
+        if layout == "connected" and len(self.structure["shared_connector"]) != 1:
             raise ValueError("Lid fitting currently requires one shared connector panel")
         adjacency = self._adjacency()
         top, bottom = self.structure["top"], self.structure["bottom"]
-        connector = self.structure["shared_connector"][0]
+        connector = self.structure["shared_connector"][0] if self.structure["shared_connector"] else None
         top_walls = [panel_id for panel_id, _ in adjacency[top] if panel_id != connector]
         bottom_walls = [panel_id for panel_id, _ in adjacency[bottom] if panel_id != connector]
-        top_by_side = {self._side_label(top, panel_id): panel_id for panel_id in top_walls}
-        bottom_by_side = {self._side_label(bottom, panel_id): panel_id for panel_id in bottom_walls}
+        top_by_side = {self._side_label(top, panel_id, layout): panel_id for panel_id in top_walls}
+        bottom_by_side = {self._side_label(bottom, panel_id, layout): panel_id for panel_id in bottom_walls}
         if len(top_by_side) != len(top_walls) or set(top_by_side) != set(bottom_by_side):
             raise ValueError("Cannot pair top and bottom walls for lid fitting")
         rows = []
@@ -1182,7 +1284,7 @@ class PanelGraph:
             rows.append({"side": side, "top_wall": top_wall, "bottom_wall": bottom_wall,
                          "gap_layers": layers, "midplane_offset": thickness*(1+layers)+lid_clearance})
         return {"status": "applied" if thickness > NUMERIC_EPS or lid_clearance > NUMERIC_EPS else "inferred",
-                "top": top, "bottom": bottom, "connector": connector,
+                "layout": layout, "top": top, "bottom": bottom, "connector": connector,
                 "thickness": thickness, "clearance": lid_clearance, "walls": rows}
 
     def _fitted_geometry(self, thickness, lid_clearance):
@@ -1204,6 +1306,10 @@ class PanelGraph:
                 new_min_x -= offset
             elif row["side"] == "right":
                 new_max_x += offset
+            elif row["side"] == "top":
+                new_y -= offset
+            elif row["side"] == "bottom":
+                new_max_y += offset
             elif row["side"] == "far":
                 wall_center = by_id[row["top_wall"]].polygon.centroid
                 if wall_center.y < top_panel.polygon.centroid.y:
@@ -1239,6 +1345,20 @@ class PanelGraph:
                 transforms[child_id] = affine_between_segments(
                     seam.start, seam.end, mapped_start, mapped_end)
                 queue.append(child_id)
+
+        if connector is None:
+            fitted_fragments = [(owner, transform_path(Path(segment), transforms[owner])[0]
+                                 if owner in transforms else segment)
+                                for owner, segment in fragments]
+            fitted_seams = {}
+            for seam in self.seams:
+                owner = seam.panel_a if seam.panel_a in transforms else seam.panel_b
+                fitted_seams[seam.id] = (transform_path(Path(seam.curve), transforms[owner])[0]
+                                         if owner in transforms else seam.curve)
+            fitted_internals = [(panel_id, shape, transform_path(path, transforms[panel_id])
+                                 if panel_id in transforms else path)
+                                for panel_id, shape, path in internals]
+            return fitted_fragments, fitted_seams, fitted_internals, plan
 
         top_connector = next(seam for neighbor, seam in adjacency[top] if neighbor == connector)
         bottom = plan["bottom"]
@@ -1562,11 +1682,20 @@ class PanelGraph:
         fragments, seam_curves, internals, reliefs, corner_reliefs, compensation, lid_fit = self._compensated_geometry(
             thickness, fold_offset, lid_clearance)
         contours = [self._untangle_contour(contour) for contour in self._trace(fragments)]
+        contour_polygons = []
         for contour in contours:
             try:
-                polygon_for(contour)
+                contour_polygons.append(polygon_for(contour))
             except ValueError as exc:
                 raise ValueError(f"Compensated exterior cut contour is invalid: {exc}") from exc
+        by_id = {panel.id: panel for panel in self.panels}
+        source_components = [unary_union([by_id[panel_id].polygon for panel_id in component])
+                             for component in self.components]
+        source_overlap = max((first.intersection(second).area
+                              for first, second in combinations(source_components, 2)), default=0)
+        for first, second in combinations(contour_polygons, 2):
+            if first.intersection(second).area > source_overlap+NUMERIC_EPS:
+                raise ValueError("Compensated exterior cut contours overlap")
         contour_lines = [LineString([point for segment in contour for point in sample_segment(segment)])
                          for contour in contours]
         for index, path in enumerate(corner_reliefs):

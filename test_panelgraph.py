@@ -5,14 +5,17 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 import xml.etree.ElementTree as ET
 
 from shapely.geometry import LineString, Point
 from svgpathtools import Arc, CubicBezier, Line, QuadraticBezier, parse_path
 
+import boxxer
 from panelgraph import BOXXER, SVG, PanelGraph, polygon_for, sample_segment
 
 ROOT = Path(__file__).parent
+SINGLE = ROOT / "drafts" / "single-shell.svg"
 
 
 def svg(shapes, directory, name="source.svg"):
@@ -26,12 +29,12 @@ def svg(shapes, directory, name="source.svg"):
 
 class PanelGraphTests(unittest.TestCase):
     def test_rotational_source_is_a_generic_panel_graph(self):
-        raw = PanelGraph(ROOT / "rotational.svg")
+        raw = PanelGraph(SINGLE)
         self.assertEqual(len(raw.panels), 9)
         self.assertEqual(len(raw.seams), 3)
         self.assertEqual(len(raw.near_seams), 5)
         self.assertGreater(len(raw.components), 1)
-        graph = PanelGraph(ROOT / "rotational.svg", snap_near=True)
+        graph = PanelGraph(SINGLE, snap_near=True)
         self.assertEqual(len(graph.panels), 9)
         self.assertEqual(len(graph.seams), 8)
         self.assertEqual(len(graph.components), 1)
@@ -157,7 +160,7 @@ class PanelGraphTests(unittest.TestCase):
                 graph.compile(Path(directory) / "out.svg")
 
     def test_metadata_and_manufacturing_output(self):
-        graph = PanelGraph(ROOT / "rotational.svg", snap_near=True)
+        graph = PanelGraph(SINGLE, snap_near=True)
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "out.svg"
             report = graph.compile(target, thickness=0.7, fold_offset=0.1)
@@ -189,7 +192,7 @@ class PanelGraphTests(unittest.TestCase):
                 self.assertAlmostEqual(row["residual"], 0, delta=1e-9)
 
     def test_inside_compensation_moves_scores_and_adds_reliefs(self):
-        graph = PanelGraph(ROOT / "rotational.svg", snap_near=True)
+        graph = PanelGraph(SINGLE, snap_near=True)
         with tempfile.TemporaryDirectory() as directory:
             plain = Path(directory) / "plain.svg"
             thick = Path(directory) / "thick.svg"
@@ -267,7 +270,7 @@ class PanelGraphTests(unittest.TestCase):
 
     def test_internal_geometry_moves_with_compensated_tab(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = ET.parse(ROOT / "rotational.svg").getroot()
+            root = ET.parse(SINGLE).getroot()
             layer = next(e for e in root if e.tag.endswith("g"))
             ET.SubElement(layer, f"{{{SVG}}}circle", id="tab-hole", cx="160", cy="31", r="1",
                           style="fill:none;stroke:#000000")
@@ -286,7 +289,7 @@ class PanelGraphTests(unittest.TestCase):
             self.assertAlmostEqual(after[0].start.imag-before[0].start.imag, shift[1])
 
     def test_compensated_principal_score_corners_are_opened_to_cut_paths(self):
-        fixtures = (ROOT / "rotational.svg", ROOT / "second.svg",
+        fixtures = (SINGLE, ROOT / "second.svg",
                     ROOT / "drafts" / "connected.svg")
         with tempfile.TemporaryDirectory() as directory:
             for fixture in fixtures:
@@ -377,8 +380,118 @@ class PanelGraphTests(unittest.TestCase):
             self.assertTrue(all(abs(abs(complex(*row["wall_edge_shift"]))-0.4) < 1e-12
                                 for row in variable))
 
-    def test_lid_clearance_requires_connected_enclosure(self):
-        graph = PanelGraph(ROOT / "rotational.svg", snap_near=True)
+    def test_separate_shells_infer_lid_base_fit_and_resize(self):
+        working = PanelGraph(ROOT / "rotational.svg", snap_near=True)
+        self.assertEqual(working.structure["layout"], "separate")
+        self.assertEqual((working.structure["top"], working.structure["bottom"]), ("rect1", "rect5"))
+        self.assertEqual(len(working.contacts), 8)
+
+        source = ROOT / "presets" / "separate-lid-box.svg"
+        graph = PanelGraph(source)
+        self.assertEqual(len(graph.components), 2)
+        self.assertEqual(graph.structure["layout"], "separate")
+        self.assertEqual(graph.structure["top"], "lid-face")
+        self.assertEqual(graph.structure["bottom"], "base-face")
+        self.assertEqual(graph.structure["shared_connector"], [])
+        self.assertEqual(len(graph.contacts), 8)
+        fit = graph.lid_fit_plan(0.5, 0.1)
+        self.assertEqual(fit["layout"], "separate")
+        self.assertIsNone(fit["connector"])
+        self.assertEqual({row["side"] for row in fit["walls"]}, {"top", "right", "bottom", "left"})
+        self.assertTrue(all(row["gap_layers"] == 1 for row in fit["walls"]))
+        self.assertTrue(all(abs(row["midplane_offset"]-1.1) < 1e-12 for row in fit["walls"]))
+
+        def component_bounds(candidate, panel_ids):
+            panels = [panel for panel in candidate.panels if panel.id in panel_ids]
+            return (min(panel.polygon.bounds[0] for panel in panels),
+                    min(panel.polygon.bounds[1] for panel in panels),
+                    max(panel.polygon.bounds[2] for panel in panels),
+                    max(panel.polygon.bounds[3] for panel in panels))
+
+        source_top = component_bounds(graph, graph.structure["top_shell"])
+        source_bottom = component_bounds(graph, graph.structure["bottom_shell"])
+        source_gap = source_bottom[1]-source_top[3]
+        resized = graph.resized(width=80, length=40, base_height=15, lid_height=15)
+        dimensions = resized._resize_structure()["dimensions"]
+        self.assertAlmostEqual(dimensions["width"], 80)
+        self.assertAlmostEqual(dimensions["length"], 40)
+        self.assertAlmostEqual(dimensions["base_height"], 15)
+        self.assertAlmostEqual(dimensions["lid_height"], 15)
+        target_top = component_bounds(resized, resized.structure["top_shell"])
+        target_bottom = component_bounds(resized, resized.structure["bottom_shell"])
+        self.assertAlmostEqual(target_bottom[1]-target_top[3], source_gap, places=5)
+        with self.assertRaisesRegex(ValueError, "Connector depth requires"):
+            graph.resized(width=80, connector_depth=20)
+
+        with tempfile.TemporaryDirectory() as directory:
+            compiled = Path(directory) / "separate.svg"
+            recompiled = Path(directory) / "recompiled.svg"
+            report = resized.compile(compiled, thickness=0.5, lid_clearance=0.1)
+            self.assertEqual(report["cut_contours"], 2)
+            self.assertEqual(report["tab_relief_cuts"], 16)
+            self.assertEqual(report["corner_relief_cuts"], 8)
+            self.assertEqual(report["lid_fit"]["status"], "applied")
+            PanelGraph(compiled).compile(recompiled)
+            self.assertEqual([(node.get("id"), node.get("d")) for node in ET.parse(compiled).findall(f".//{{{SVG}}}path")],
+                             [(node.get("id"), node.get("d")) for node in ET.parse(recompiled).findall(f".//{{{SVG}}}path")])
+
+    def test_separate_shell_inference_rejects_ambiguous_components(self):
+        def shell(prefix, x, y, width, length):
+            return [
+                ("rect", {"id": f"{prefix}-face", "x": str(x), "y": str(y),
+                          "width": str(width), "height": str(length)}),
+                ("rect", {"id": f"{prefix}-top", "x": str(x), "y": str(y-5),
+                          "width": str(width), "height": "5"}),
+                ("rect", {"id": f"{prefix}-right", "x": str(x+width), "y": str(y),
+                          "width": "5", "height": str(length)}),
+                ("rect", {"id": f"{prefix}-bottom", "x": str(x), "y": str(y+length),
+                          "width": str(width), "height": "5"}),
+                ("rect", {"id": f"{prefix}-left", "x": str(x-5), "y": str(y),
+                          "width": "5", "height": str(length)}),
+            ]
+
+        with tempfile.TemporaryDirectory() as directory:
+            unequal = PanelGraph(svg(shell("upper", 10, 10, 40, 30)+
+                                     shell("lower", 10, 60, 80, 50), directory, "unequal.svg"))
+            self.assertEqual(unequal.structure["status"], "none")
+
+            open_shells = shell("upper", 10, 10, 40, 30)[:-1]+shell("lower", 10, 60, 40, 30)[:-1]
+            incomplete = PanelGraph(svg(open_shells, directory, "incomplete.svg"))
+            self.assertEqual(incomplete.structure["status"], "none")
+
+            def tiny_flaps(prefix, y):
+                return [
+                    ("rect", {"id": f"{prefix}-face", "x": "10", "y": str(y),
+                              "width": "40", "height": "30"}),
+                    ("rect", {"id": f"{prefix}-top", "x": "29", "y": str(y-5),
+                              "width": "2", "height": "5"}),
+                    ("rect", {"id": f"{prefix}-right", "x": "50", "y": str(y+14),
+                              "width": "5", "height": "2"}),
+                    ("rect", {"id": f"{prefix}-bottom", "x": "29", "y": str(y+30),
+                              "width": "2", "height": "5"}),
+                    ("rect", {"id": f"{prefix}-left", "x": "5", "y": str(y+14),
+                              "width": "5", "height": "2"}),
+                ]
+
+            short_folds = PanelGraph(svg(tiny_flaps("upper", 10)+tiny_flaps("lower", 60),
+                                         directory, "short-folds.svg"))
+            self.assertEqual(short_folds.structure["status"], "none")
+
+    def test_separate_lid_fit_rejects_overlapping_output_contours(self):
+        with tempfile.TemporaryDirectory() as directory:
+            tree = ET.parse(ROOT / "presets" / "separate-lid-box.svg")
+            for node in tree.findall(f".//{{{SVG}}}rect"):
+                if node.get("id", "").startswith("base-"):
+                    node.set("y", str(float(node.get("y"))-19.8))
+            source = Path(directory) / "narrow-gap.svg"
+            tree.write(source, encoding="utf-8", xml_declaration=True)
+            graph = PanelGraph(source)
+            self.assertEqual(graph.structure["layout"], "separate")
+            with self.assertRaisesRegex(ValueError, "contours overlap"):
+                graph.compile(Path(directory) / "unused.svg", thickness=0.5, lid_clearance=0.1)
+
+    def test_lid_clearance_requires_inferred_enclosure(self):
+        graph = PanelGraph(SINGLE, snap_near=True)
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaisesRegex(ValueError, "requires an inferred"):
                 graph.compile(Path(directory) / "unused.svg", thickness=0.5, lid_clearance=0.1)
@@ -442,7 +555,7 @@ class PanelGraphTests(unittest.TestCase):
             return max(abs(((complex(x, y)-seam.start)*vector.conjugate()).imag)/abs(vector)
                        for x, y in panel.polygon.exterior.coords)
 
-        rotational = PanelGraph(ROOT / "rotational.svg", snap_near=True)
+        rotational = PanelGraph(SINGLE, snap_near=True)
         resized = rotational.resized(width=80, length=70, height=25)
         dimensions = resized._resize_structure()["dimensions"]
         self.assertAlmostEqual(dimensions["width"], 80)
@@ -531,7 +644,7 @@ class PanelGraphTests(unittest.TestCase):
             output = Path(directory) / "compiled.svg"
             source = Path(directory) / "source.svg"
             result = subprocess.run(command+[
-                "resize", str(ROOT / "rotational.svg"), "--snap-near",
+                "resize", str(SINGLE), "--snap-near",
                 "--width", "300", "--height", "25", "--thickness", "0.5",
                 "--source-output", str(source), "-o", str(output), "--json",
             ], capture_output=True, text=True)
@@ -549,15 +662,15 @@ class PanelGraphTests(unittest.TestCase):
             self.assertEqual(model["resize"]["requested"], {"width": 300.0, "height": 25.0})
 
             missing = subprocess.run(command+[
-                "resize", str(ROOT / "rotational.svg"), "--snap-near", "-o", str(output),
+                "resize", str(SINGLE), "--snap-near", "-o", str(output),
             ], capture_output=True, text=True)
             self.assertEqual(missing.returncode, 2)
             self.assertIn("at least one target dimension", missing.stderr)
 
             hard_link = Path(directory) / "source-hard-link.svg"
-            os.link(ROOT / "rotational.svg", hard_link)
+            os.link(SINGLE, hard_link)
             unsafe = subprocess.run(command+[
-                "resize", str(ROOT / "rotational.svg"), "--snap-near", "--width", "80",
+                "resize", str(SINGLE), "--snap-near", "--width", "80",
                 "-o", str(hard_link),
             ], capture_output=True, text=True)
             self.assertEqual(unsafe.returncode, 2)
@@ -566,13 +679,83 @@ class PanelGraphTests(unittest.TestCase):
             output.write_text("compiled sentinel")
             source.write_text("source sentinel")
             failed = subprocess.run(command+[
-                "resize", str(ROOT / "rotational.svg"), "--snap-near", "--width", "80",
+                "resize", str(SINGLE), "--snap-near", "--width", "80",
                 "--thickness", "0.5", "--fold-offset", "-0.6",
                 "--source-output", str(source), "-o", str(output),
             ], capture_output=True, text=True)
             self.assertEqual(failed.returncode, 2)
             self.assertEqual(output.read_text(), "compiled sentinel")
             self.assertEqual(source.read_text(), "source sentinel")
+            with self.assertRaisesRegex(ValueError, "must not be directories"):
+                boxxer.validate_resize_paths(SINGLE, output, Path(directory))
+
+            graph = PanelGraph(SINGLE, snap_near=True)
+            real_replace = os.replace
+            failed_source_install = False
+
+            def fail_second_install(source_path, target_path):
+                nonlocal failed_source_install
+                if Path(target_path) == source and not failed_source_install:
+                    failed_source_install = True
+                    raise OSError("simulated second-output failure")
+                return real_replace(source_path, target_path)
+
+            with mock.patch.object(boxxer.os, "replace", side_effect=fail_second_install):
+                with self.assertRaisesRegex(OSError, "second-output failure"):
+                    boxxer.resize_and_compile(
+                        graph, SINGLE, output, source, {"width": 80},
+                        thickness=0.5, fold_offset=0, lid_clearance=0)
+            self.assertEqual(output.read_text(), "compiled sentinel")
+            self.assertEqual(source.read_text(), "source sentinel")
+
+    def test_interactive_cli_accepts_a_preset_or_svg_path(self):
+        command = [sys.executable, str(ROOT / "boxxer.py"), "interactive"]
+        presets = json.loads((ROOT / "presets" / "presets.json").read_text())
+        self.assertEqual([preset["name"] for preset in presets], [
+            "Separate lid box", "Outside-tab tray", "Connected lid box",
+        ])
+        with tempfile.TemporaryDirectory() as directory:
+            preset_output = Path(directory) / "preset.svg"
+            preset_answers = "\n".join([
+                "1", "80", "70", "25", "25", "", "", "0.1",
+                str(preset_output), "", "y",
+            ])+"\n"
+            selected = subprocess.run(command, input=preset_answers, capture_output=True, text=True)
+            self.assertEqual(selected.returncode, 0, selected.stderr)
+            self.assertIn("Available presets:", selected.stdout)
+            self.assertIn("Detected separate box net.", selected.stdout)
+            model = json.loads(ET.parse(preset_output).findtext(f".//{{{BOXXER}}}model"))
+            self.assertEqual(model["resize"]["effective_dimensions"], {
+                "width": 80.0, "length": 70.0, "base_height": 25.0,
+                "lid_height": 25.0, "lid_width": 80.0, "lid_length": 70.0,
+            })
+            self.assertEqual(model["lid_clearance"], 0.1)
+
+            path_output = Path(directory) / "path.svg"
+            path_answers = "\n".join([
+                str(ROOT / "second.svg"), "y", "", "", "", "", "",
+                str(path_output), "", "y",
+            ])+"\n"
+            selected = subprocess.run(command, input=path_answers, capture_output=True, text=True)
+            self.assertEqual(selected.returncode, 0, selected.stderr)
+            self.assertTrue(path_output.exists())
+            self.assertIn("Outside-tab tray", selected.stdout)
+            self.assertIn("Panel source: second.svg", selected.stdout)
+            self.assertNotIn("Lid clearance (mm)", selected.stdout)
+
+            null_registry = Path(directory) / "presets.json"
+            null_registry.write_text(json.dumps([{
+                "name": "Null defaults", "source": str(ROOT / "presets" / "separate-lid-box.svg"),
+                "thickness": None, "fold_offset": None, "lid_clearance": None,
+            }]))
+            null_output = Path(directory) / "null.svg"
+            null_answers = "\n".join([
+                "1", "", "", "", "", "", "", "", str(null_output), "", "y",
+            ])+"\n"
+            selected = subprocess.run(command+["--presets", str(null_registry)], input=null_answers,
+                                      capture_output=True, text=True)
+            self.assertEqual(selected.returncode, 0, selected.stderr)
+            self.assertTrue(null_output.exists())
 
     def test_cyclic_panel_graph_skips_rigid_contact_inference(self):
         with tempfile.TemporaryDirectory() as directory:

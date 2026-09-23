@@ -16,9 +16,8 @@ as native SVG geometry. Native curves remain curves in the compiled output.
 
 Thickness compensation is derived from this topology. Boxxer folds each connected
 component virtually, infers unambiguous leaf-tab contacts, and moves the tab,
-crease, and attached internal geometry together. Connected top/bottom shells can
-also be fitted by expanding the outer lid. Generated detached lids and the
-interactive workflow remain outside the current compiler.
+crease, and attached internal geometry together. Connected and detached top/bottom
+shells can be fitted by expanding the outer lid.
 
 ## Setup
 
@@ -42,7 +41,7 @@ Inspection reports:
 - Panel pairs whose edges are nearly, but not exactly, coincident.
 - Invalid material-area overlaps.
 - Inferred leaf-tab contacts and achieved compensated separation.
-- Inferred connected top/bottom shells and flap-aware lid fit.
+- Inferred connected or detached top/bottom shells and flap-aware lid fit.
 - Whether the graph belongs to the resizable box-net family and its nominal
   width, length, wall heights, and connector depth.
 
@@ -130,14 +129,15 @@ uv run python boxxer.py resize drafts/connected.svg --snap-near \
 ```
 
 `--width` and `--length` are nominal principal-face fold dimensions. `--height`
-sets a single shell's wall height. In a connected enclosure it sets the base and
+sets a single shell's wall height. In a two-shell enclosure it sets the base and
 also sets the lid when their source heights match. `--base-height` and
 `--lid-height` override those values independently. Connector depth follows the
 base-height change unless `--connector-depth` is supplied.
 
-For connected designs, width and length target the base. The same deltas are
+For connected and separate designs, width and length target the base. The same deltas are
 applied to the lid, preserving any source lid/base difference; physical lid fit is
 then added from material thickness, flap layers, and lid clearance.
+Detached pieces retain their original material-to-material page gap.
 
 Structural spans stretch, but manufacturing features keep their physical size.
 Tab roots grow with wall height while retaining fixed end reliefs; tab overlap,
@@ -154,10 +154,37 @@ Resize output always uses a portrait A4 SVG page (`210 x 297 mm`). Geometry is
 translated to start at `10,10` but is intentionally allowed to extend beyond the
 page. Actual output bounds and `page_overflow` are recorded in metadata.
 
-Automatic resizing currently supports one connected box-net component,
-axis-aligned rectangular principal faces, straight structural folds, uniform wall
-height within each shell, and at most one shared connector. Native curves away
-from structural folds are retained.
+Automatic resizing supports one shell, two detached shells, or two shells joined
+by one connector. It currently requires axis-aligned rectangular principal faces,
+straight structural folds, and uniform wall height within each shell. Native
+curves away from structural folds are retained.
+
+## Interactive resize
+
+Run the guided terminal workflow without an input path to choose one of the
+supplied presets:
+
+```sh
+uv run python boxxer.py interactive
+```
+
+The wizard lists the entries in `presets/presets.json`, asks whether reported
+near-coincident seams may be repaired, shows the inferred dimensions, and prompts
+for target dimensions, material settings, and output paths. Press Enter to retain
+the displayed value, or enter `q` to cancel.
+
+Instead of selecting a preset, enter any SVG path at the source prompt. A path can
+also be supplied directly:
+
+```sh
+uv run python boxxer.py interactive path/to/design.svg
+```
+
+The built-in registry references stable SVG copies stored in `presets/`. Entries
+can reference other SVG files relative to their registry and set default
+thickness, fold offset, and lid clearance. Use another registry with
+`--presets path/to/presets.json`. Interactive output uses the same validation,
+hard-link protection, and atomic writes as the regular `resize` command.
 
 ## Thickness compensation
 
@@ -193,11 +220,12 @@ edge and the compensated crease while retaining a simple exterior contour.
 Outside-tab root connectors remain part of the exterior contour. Internal cuts
 owned by a moved tab translate rigidly with that tab.
 
-## Connected lids
+## Lid fitting
 
-For a connected panel tree, Boxxer can infer two dominant principal faces joined
-by a simple, non-branching connector. By convention, the principal face higher on
-the SVG page is the top outer lid and the lower face is the bottom inner shell.
+Boxxer recognizes either two dominant principal faces joined by a simple,
+non-branching connector or exactly two disconnected components that each form one
+valid box shell. By convention, the principal face higher on the SVG page is the
+top outer lid and the lower face is the bottom inner shell.
 Tabs are matched to receivers within their own shell, preventing coincident walls
 in the closed assembly from creating false contact ambiguity. Shared connector
 panels belong to both contact domains while retaining their separate deformation
@@ -215,11 +243,13 @@ An inside flap on the top shell occupies the nesting gap, as does an outside fla
 on the bottom shell. In `connected.svg`, the two top side walls therefore move by
 1.0 mm for 0.5 mm stock, while the flap-free front wall moves by 0.5 mm. The shared
 connector keeps both hinge axes and tapers from the expanded top edge to the
-unchanged bottom edge. `--lid-clearance` adds nonnegative per-side manufacturing
-clearance and defaults to zero.
+unchanged bottom edge. A detached lid has four independently fitted wall pairs;
+its base remains unchanged. `--lid-clearance` adds nonnegative per-side
+manufacturing clearance and defaults to zero.
 
-Automatic lid fitting currently requires straight principal, shell, and connector
-folds, an axis-aligned rectangular principal face, and one shared connector panel.
+Automatic lid fitting currently requires straight principal and shell folds and
+axis-aligned rectangular principal faces. A connected layout requires one shared
+connector panel; a detached layout requires exactly two recognizable shells.
 Unsupported, cyclic, or ambiguous structures are reported rather than reshaped
 heuristically. Glue-contact residuals are verified on local source geometry before
 lid fitting and are labeled accordingly in connected-layout metadata; emitted fold
@@ -231,7 +261,7 @@ With explicit near-edge repair:
 
 | Source | Panels | Folds | Internal cuts | Components |
 |---|---:|---:|---:|---:|
-| `rotational.svg` | 9 | 8 | 0 | 1 |
+| `rotational.svg` | 18 | 16 | 0 | 2 |
 | `second.svg` | 9 | 8 | 4 | 1 |
 | `drafts/connected.svg` | 15 | 14 | 0 | 1 |
 
@@ -239,9 +269,9 @@ With explicit near-edge repair:
 Its four rounded slot shapes are retained unchanged as internal cuts owned by the
 two side-wall panels. Boxxer does not yet simulate tabs entering slots.
 
-One connected component is one material piece. Multiple disconnected components
-are still reported without assigning box-specific meaning; two components do not
-automatically mean top and bottom.
+One connected component is one material piece. Exactly two components are assigned
+upper-lid/lower-base roles only when each independently satisfies the shell
+topology. Other multi-component drawings remain neutral.
 
 ## Tests
 
@@ -254,7 +284,8 @@ panels, native rounded and curved output, strict internal-geometry ownership,
 near-edge diagnostics and explicit repair, metadata, overlap rejection, shared
 points, separate components, inside and outside compensation, signed fold offset,
 relief cuts, folded-separation verification, attached internal geometry, and CLI
-safety. It also covers connected shell inference, local contact selection,
-flap-aware lid expansion, tapered connectors, and configurable lid clearance.
-Resize coverage includes single and connected shells, fixed-size internal and
-curved features, editable source output, schema-4 round trips, and A4 overflow.
+safety. It also covers connected and detached shell inference, local contact
+selection, flap-aware lid expansion, tapered connectors, and configurable lid
+clearance. Resize coverage includes single, connected, and detached shells,
+fixed-size internal and curved features, preserved detached-piece gaps, editable
+source output, schema-4 round trips, and A4 overflow.

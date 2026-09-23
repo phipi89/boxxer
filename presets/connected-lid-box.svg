@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="210mm" height="297mm" viewBox="0 0 210 297">
+  <g fill="none" stroke="#000000">
+    <rect id="rect1" width="100" height="100" x="52.58744" y="43.160965"/>
+    <path id="rect2" d="M 52.587488 23.16086 L 52.587488 43.16119 L 152.58759 43.16119 L 152.58759 23.16086 L 116.37171 23.16086 A 14.5 14.500001 0 0 1 102.58754 33.160767 A 14.5 14.500001 0 0 1 88.803365 23.16086 L 52.587488 23.16086 z"/>
+    <path id="rect2-3-6" transform="rotate(-90)" d="m -143.16096,152.58743 h 99.999995 v 20 h -97.354165 z"/>
+    <path id="rect3" transform="rotate(-90)" d="m -140.51513,32.58744 h 97.354165 v 20 h -99.999995 z"/>
+    <rect id="rect4" width="17" height="17" x="152.58743" y="23.160963"/>
+    <rect id="rect4-20" width="17" height="17" x="35.58744" y="23.160963"/>
+    <rect id="rect5" width="100" height="100" x="52.58744" y="163.16096"/>
+    <rect id="rect6" width="100" height="20" x="52.58744" y="143.16096"/>
+    <rect id="rect7" width="100" height="20" x="-263.16098" y="152.58743" transform="rotate(-90)"/>
+    <rect id="rect8" width="100" height="20" x="-263.16098" y="32.58744" transform="rotate(-90)"/>
+    <rect id="rect9" width="100" height="20" x="-152.58743" y="-283.16095" transform="scale(-1)"/>
+    <rect id="rect10" width="17" height="17" x="-52.587444" y="-283.16095" transform="scale(-1)"/>
+    <path id="rect10-0" transform="scale(-1)" d="m -49.58744,-163.16098 h 17 v 17 h -10.950181 a 4.8984349,4.8984349 42.332528 0 1 -4.877216,-4.44299 z"/>
+    <rect id="rect11" width="17" height="17" x="-169.58743" y="-283.16095" transform="scale(-1)"/>
+    <path id="path1" d="m 155.58743,163.16098 h 17 v -17 h -11.67989 a 4.097412,4.097412 137.66747 0 0 -4.07966,3.71644 z"/>
+  </g>
+</svg>

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="210mm" height="297mm" viewBox="0 0 210 297">
+  <g fill="none" stroke="#000000">
+    <rect id="rect1" x="52.58744" y="43.160965" width="100" height="100"/>
+    <rect id="rect2" x="52.58744" y="23.160963" width="100" height="20"/>
+    <rect id="rect2-3-6" x="152.58743" y="43.16096" width="20" height="100"/>
+    <rect id="rect2-3" x="52.587437" y="143.16096" width="100" height="20"/>
+    <rect id="rect3" x="32.58744" y="43.16096" width="20" height="100"/>
+    <rect id="rect4" x="152.58743" y="23.160963" width="17" height="17"/>
+    <rect id="rect4-1" x="155.58743" y="143.16096" width="17" height="17"/>
+    <rect id="rect4-2" x="35.587437" y="146.16096" width="17" height="17"/>
+    <rect id="rect4-20" x="32.58744" y="26.160965" width="17" height="17"/>
+  </g>
+</svg>

@@ -1,0 +1,21 @@
+[
+  {
+    "name": "Separate lid box",
+    "description": "Detached upper lid and lower base with inside glue tabs",
+    "source": "separate-lid-box.svg",
+    "thickness": 0.5
+  },
+  {
+    "name": "Outside-tab tray",
+    "description": "Single-shell tray with curved outside tabs and internal slots",
+    "source": "outside-tab-tray.svg",
+    "thickness": 0.5
+  },
+  {
+    "name": "Connected lid box",
+    "description": "Connected outer lid and inner base with a shared hinge panel",
+    "source": "connected-lid-box.svg",
+    "thickness": 0.5,
+    "lid_clearance": 0.0
+  }
+]
