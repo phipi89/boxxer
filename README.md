@@ -25,6 +25,143 @@ shells can be fitted by expanding the outer lid.
 uv sync
 ```
 
+## Fold overlays and symmetry markers
+
+Draw straight line overlays snapped to shared panel boundaries. Colour is only
+a visual aid. Traversal count and dash style specify the fold:
+
+| Overlay | Rotation from flat | Score side |
+| --- | --- | --- |
+| None, or single solid stroke | +90° valley | Front |
+| Single dashed stroke | −90° mountain | Back |
+| Solid out-and-back stroke | +180° valley | Front |
+| Dashed out-and-back stroke | −180° mountain | Back |
+
+A double line is **one path traversing the same edge in both directions**, not
+two separated parallel lines. For example, `M10 6 V10 Z` travels down the seam
+and closes back along it. Inkscape's path-direction indicators show both
+directions. Subdividing a stroke does not change its angle. Partial returns,
+conflicting annotations, and guides not covering complete shared seams are
+rejected. Path drawing direction and stroke colour do not affect fold signs.
+The front is the face represented by the sketch; valley folds bring front
+faces together. Dashed **panel outlines** retain their older outside-tab hint;
+only zero-area line overlays specify mountain folds.
+
+A **single dash-dotted line** (`long dash, gap, short dash, gap`) is a mirror
+axis. Boxxer reflects panel geometry, internal cuts, and fold overlays across
+it before building the graph. Shapes already present at the reflected location
+are retained once. One axis or two perpendicular axes are supported, including
+rotated axes. Axis extent does not crop the reflection. Mirroring within the
+sheet preserves mountain/valley signs. Resized editable sources contain the
+expanded geometry and fold overlays, so they do not expand a second time.
+
+A **dash-dotted open circular arc** indicates rotational symmetry. Its circle
+centre is the rotation centre and its angular span is the repeat angle:
+180° gives two copies, 120° three, 90° four, and 60° six, including the original.
+The radius, stroke colour, and direction of drawing are immaterial. In Inkscape,
+use the ellipse tool's open-arc mode and set the start/end angles numerically.
+The span must divide 360° (2–360 copies); an ellipse or a full circle is not a
+rotation marker. Transformed and multi-segment circular arcs are supported.
+
+Rotation copies material, internal cuts, editable corners, and fold annotations.
+Existing copies are deduplicated geometrically. Multiple rotational markers
+must agree on the centre and order. Mirror axes combined with rotation must
+pass through its centre; two perpendicular mirror axes require an even rotation
+order. Conflicting fold or material copies are rejected. These are general
+geometry rules, independent of source filenames. Expansion precedes resizing,
+allowing a fourfold square net to become a rectangular net while retaining
+the corner-gusset angles.
+
+Compiled output has front scores in `boxxer-scores` and backside scores in
+`boxxer-scores-back`, with signed angle and score-side attributes. A 180° guide
+produces one score operation, not two passes. Both groups use the same front-view
+coordinates; registration/mirroring for physically turning the sheet is a
+separate plotter setup step. Backside scores are displayed blue and dashed.
+
+### Gusset thickness and crease placement
+
+Signed-fold components use a **scored-surface sharp-hinge model**: panels are
+midplanes, and the hinge lies half a thickness above the midplane for a valley
+or below it for a mountain. Every closed loop is checked with the signed angles.
+Thickness placement solves all crease shifts together, keeps the largest
+panel's creases fixed, and checks that parallel overlapping faces occupy
+separate material layers. Inconsistent loops are rejected even at zero thickness.
+
+For the top-left corner of `presets/gluefree.svg`, at `--thickness 0.4` and
+`--fold-offset 0`, the solution is:
+
+- Vertical backside return crease: **0.4 mm left**.
+- Horizontal gusset crease: **0.8 mm upward**.
+- Diagonal and base creases: unchanged.
+
+The two returning gusset midplanes sit 0.4 mm and 0.8 mm behind the wall's
+midplane. Half-thickness surface offsets are already included in the hinge
+equations; subtracting another 0.2 mm from the horizontal shift would break
+closure. For these signed-fold components, `fold_offset` adjusts the effective
+layer pitch to `thickness + fold_offset`; it defaults to zero. A negative value
+that makes physical layers overlap is rejected. Existing unannotated glue-tab
+designs retain their original compensation rule below.
+
+Scores are shifted within the existing cut outline, and free endpoints are
+clipped to the material. Internal crease endpoints can separate at a thick
+multi-fold junction. This idealised construction does not model bend radius,
+paper compression, folding sequence, or the deformation of that small junction;
+it does not add automatic relief holes. The layer check covers parallel stacked
+faces, not a full collision simulation during folding.
+
+The glue-free preset expands to 13 panels, 16 folds, and four slots. Resizing
+scales corner gussets uniformly with wall height, preserving their diagonal
+angles and native curved boundaries; slots retain their feature rules.
+
+```sh
+uv run python boxxer.py compile presets/gluefree.svg --snap-near \
+  --thickness 0.4 --fold-offset 0 --output compiled/gluefree-compiled.svg
+```
+
+## Generated finger cutouts
+
+Finger openings are a generation option; no sketch annotations are needed:
+
+```sh
+uv run python boxxer.py compile source.svg --snap-near --thickness 0.4 \
+  --finger-cutout --output compiled.svg
+
+uv run python boxxer.py resize source.svg --snap-near \
+  --width 100 --length 80 --height 20 \
+  --finger-cutout opposing --finger-cutout-diameter 30 --finger-cutout-depth 10 \
+  --output resized.svg
+```
+
+- `--finger-cutout` (or `--finger-cutout one`) selects one opening.
+- `--finger-cutout opposing` selects two opposite free walls.
+- `--finger-cutout none` disables openings, including a setting stored in compiled input.
+- Diameter defaults to **30 mm**, and penetration into the edge to **10 mm**.
+  This is a circular segment with an approximately **28.28 mm mouth**, not a
+  semicircle. Diameter and depth must be positive; depth may not exceed the radius.
+
+On a hinged lid, the selected flap is opposite the hinge, independent of page
+rotation. On a detached lid or single-shell tray, the default is the page-top
+wall. A lid-and-base enclosure receives openings in the lid only. The opposing
+option requires two free opposite walls; it never cuts the lid's hinge panel.
+An ambiguous top wall is reported instead of selecting one arbitrarily.
+
+Each opening is centred along its principal fold and projected onto the free
+edge. It is clipped to leave **at least 3 mm of material** to other cut boundaries,
+internal slots/holes, and final score lines. The circle radius is retained;
+cropping can introduce straight sides or a flat bottom. The crop keeps the
+widest clear mouth, then limits depth. A flap with no usable safe opening, an
+already occupied edge centre, or no straight free edge is left without a cutout,
+with the reason included in the report.
+
+Openings are calculated after resizing, fitting, and thickness compensation.
+The generated cut follows native SVG arcs and lines, retaining editable corner
+effects elsewhere on the contour. Settings and actual openings are recorded in
+`finger_cutout` and `finger_cutouts` metadata. Compiled SVG input reuses its
+settings unless overridden, and regenerates openings from the embedded source
+on recompilation or resize. Editable source output remains the pre-manufacturing
+panel sketch; the procedural openings are in the compiled cut contour.
+The interactive wizard offers the same mode, diameter, and depth options.
+
 ## Inspect a panel source
 
 ```sh
@@ -139,11 +276,62 @@ applied to the lid, preserving any source lid/base difference; physical lid fit 
 then added from material thickness, flap layers, and lid clearance.
 Detached pieces retain their original material-to-material page gap.
 
-Structural spans stretch, but manufacturing features keep their physical size.
-Tab roots grow with wall height while retaining fixed end reliefs; tab overlap,
-slots, holes, curved tab profiles, and notches remain unchanged. A resize is
-rejected if fixed geometry no longer fits, panel interiors overlap, containment
-changes, or fold topology changes.
+Structural spans stretch according to their role:
+
+- Receiving slots retain their width and end-cap profiles. Each end keeps its
+  original inset from the nearest transverse edge of the owning panel. Their
+  length therefore follows changes to that panel's span, while their lateral
+  position follows their fractional attachment position on those edges.
+- Finger cutouts and inward edge notches retain their complete profiles and their
+  relative position along the supporting straight edge. A centred cutout stays
+  centred. Holes and other rigid internal cuts retain their size.
+- Tab roots grow with wall height while retaining fixed end reliefs. Flap depth
+  remains unchanged unless overlapping folded flaps require shortening.
+
+For example, a vertical slot on a 20 mm wall with 3 mm insets at each end is
+14 mm long. Increasing the wall height to 30 mm makes it 24 mm long, with the same
+width and end insets. These feature rules also apply during lid fitting.
+
+Non-square rectangular and circular-ended rounded internal cuts are automatically
+treated as slots. Other internal profiles stay rigid. For an elongated decorative
+opening that should remain rigid, specify `boxxer:feature="fixed"`. Explicit
+`boxxer:feature="slot"` requires a supported slot profile and transverse edge
+anchors. Declare the namespace on the SVG root:
+
+```xml
+<svg xmlns="http://www.w3.org/2000/svg"
+     xmlns:boxxer="https://boxxer.local/ns/1"
+     width="210mm" height="297mm" viewBox="0 0 210 297">
+  <!-- Other panel-source geometry ... -->
+  <rect id="decorative-opening" x="60" y="42" width="1" height="6"
+        boxxer:feature="fixed"/>
+</svg>
+```
+
+Feature policies survive editable-source output and compiled round trips. A resize
+is rejected if slot end profiles and insets no longer fit, panel interiors overlap,
+containment changes, or fold topology changes.
+
+### Editable corner radii
+
+Boxxer preserves Inkscape's `fillet_chamfer` (Corners/Chamfer) Live Path Effect on
+exposed corners between straight source edges. The LPE's `inkscape:original-d`
+path is used as the sharp structural geometry for fold detection, resizing,
+fitting, and compensation. The physical corner radius remains fixed while its
+adjacent structural spans change.
+
+Editable resized source files contain regenerated live panel-level effects. The
+merged manufacturing cut contour also receives a live `fillet_chamfer` effect,
+with generated contour vertices left at zero radius and tracked source corners
+restored at their original radii. Its visible `d` geometry is already rounded, so
+ordinary SVG renderers and plotters see the intended result without opening the
+file in Inkscape. Inkscape can subsequently adjust the same corners directly.
+
+Only circular fillets represented by a `fillet_chamfer` effect are currently
+supported. Chamfers, arbitrary path effects, nonuniformly scaled radii, effects on
+curved `original-d` paths, and radii that no longer fit after a resize are rejected
+explicitly rather than flattened or silently discarded. Compiled metadata lists
+the originating shape, vertex, and physical radius under `editable_corners`.
 
 The main output is a schema-4 manufacturing SVG embedding the resized,
 uncompensated source. `--source-output` additionally writes that editable source.
@@ -220,6 +408,26 @@ edge and the compensated crease while retaining a simple exterior contour.
 Outside-tab root connectors remain part of the exterior contour. Internal cuts
 owned by a moved tab translate rigidly with that tab.
 
+### Overlapping flaps
+
+Before manufacturing paths are generated, inferred flaps are compared in their
+folded receiver coordinate system. Flaps on the same receiving surface and side
+must not overlap. When they do, their free ends are shortened equally until their
+footprints no longer overlap; hinge attachments remain unchanged. Two opposing
+20 mm flaps on a 30 mm receiving wall become 15 mm each. Multiple pair constraints
+are combined independently of SVG element order.
+
+Shortening clips the free-end profile, retaining surviving native curve segments.
+It is rejected if it cuts through internal geometry, disconnects material, or
+changes fold topology or inferred contacts. Disjoint flaps and flaps on opposite
+sides of a receiving wall are not shortened. An inside lid flap and an outside
+base flap still contribute separate layers to the nesting gap.
+
+Both direct compilation and resizing apply this rule. Resize source output
+contains the shortened flaps. Direct compilation embeds the original source so a
+subsequent enlargement can recover the intended flap depths. Adjustments are
+reported in CLI output and `flap_shortening` metadata.
+
 ## Lid fitting
 
 Boxxer recognizes either two dominant principal faces joined by a simple,
@@ -289,3 +497,8 @@ selection, flap-aware lid expansion, tapered connectors, and configurable lid
 clearance. Resize coverage includes single, connected, and detached shells,
 fixed-size internal and curved features, preserved detached-piece gaps, editable
 source output, schema-4 round trips, and A4 overflow.
+Additional generated-design tests cover anchored slot ends, fixed slot width and
+caps, rigid holes and edge cutouts, feature overrides, folded flap overlap,
+shortening under rotation and element reordering, internal-feature protection,
+shortening round trips, editable Inkscape corner effects, resized radii, merged
+cut-contour effects, and compiled-file corner round trips.

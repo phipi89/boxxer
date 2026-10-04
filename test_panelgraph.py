@@ -575,17 +575,24 @@ class PanelGraphTests(unittest.TestCase):
 
         second = PanelGraph(ROOT / "second.svg", snap_near=True)
         source_internal = {shape.id: shape.polygon.bounds for panel in second.panels for shape in panel.internal}
+        source_owners = {shape.id: panel.polygon.bounds for panel in second.panels for shape in panel.internal}
         source_curves = sorted(segment.length(error=1e-6) for panel in second.panels
                                for segment in panel.path if not isinstance(segment, Line))
         resized_second = second.resized(width=125, length=90, height=30)
         target_internal = {shape.id: shape.polygon.bounds for panel in resized_second.panels for shape in panel.internal}
+        target_owners = {shape.id: panel.polygon.bounds for panel in resized_second.panels for shape in panel.internal}
         target_curves = sorted(segment.length(error=1e-6) for panel in resized_second.panels
                                for segment in panel.path if not isinstance(segment, Line))
         for shape_id, bounds in source_internal.items():
             before = bounds[2]-bounds[0], bounds[3]-bounds[1]
             after_bounds = target_internal[shape_id]
             after = after_bounds[2]-after_bounds[0], after_bounds[3]-after_bounds[1]
-            self.assertAlmostEqual(after[0], before[0])
+            # These horizontal receiving slots follow the wall height, retaining
+            # their width and their insets from the transverse panel edges.
+            self.assertAlmostEqual(after_bounds[0]-target_owners[shape_id][0],
+                                   bounds[0]-source_owners[shape_id][0], places=5)
+            self.assertAlmostEqual(target_owners[shape_id][2]-after_bounds[2],
+                                   source_owners[shape_id][2]-bounds[2], places=5)
             self.assertAlmostEqual(after[1], before[1])
         self.assertEqual(len(source_curves), len(target_curves))
         for before, after in zip(source_curves, target_curves):
@@ -712,12 +719,12 @@ class PanelGraphTests(unittest.TestCase):
         command = [sys.executable, str(ROOT / "boxxer.py"), "interactive"]
         presets = json.loads((ROOT / "presets" / "presets.json").read_text())
         self.assertEqual([preset["name"] for preset in presets], [
-            "Separate lid box", "Outside-tab tray", "Connected lid box",
+            "Separate lid box", "Outside-tab tray", "Connected lid box", "Glue-free gusset tray",
         ])
         with tempfile.TemporaryDirectory() as directory:
             preset_output = Path(directory) / "preset.svg"
             preset_answers = "\n".join([
-                "1", "80", "70", "25", "25", "", "", "0.1",
+                "1", "80", "70", "25", "25", "", "", "0.1", "",
                 str(preset_output), "", "y",
             ])+"\n"
             selected = subprocess.run(command, input=preset_answers, capture_output=True, text=True)
@@ -733,7 +740,7 @@ class PanelGraphTests(unittest.TestCase):
 
             path_output = Path(directory) / "path.svg"
             path_answers = "\n".join([
-                str(ROOT / "second.svg"), "y", "", "", "", "", "",
+                str(ROOT / "second.svg"), "y", "", "", "", "", "", "",
                 str(path_output), "", "y",
             ])+"\n"
             selected = subprocess.run(command, input=path_answers, capture_output=True, text=True)
@@ -750,14 +757,14 @@ class PanelGraphTests(unittest.TestCase):
             }]))
             null_output = Path(directory) / "null.svg"
             null_answers = "\n".join([
-                "1", "", "", "", "", "", "", "", str(null_output), "", "y",
+                "1", "", "", "", "", "", "", "", "", str(null_output), "", "y",
             ])+"\n"
             selected = subprocess.run(command+["--presets", str(null_registry)], input=null_answers,
                                       capture_output=True, text=True)
             self.assertEqual(selected.returncode, 0, selected.stderr)
             self.assertTrue(null_output.exists())
 
-    def test_cyclic_panel_graph_skips_rigid_contact_inference(self):
+    def test_inconsistent_cyclic_panel_graph_reports_closure_failure(self):
         with tempfile.TemporaryDirectory() as directory:
             source = svg([
                 ("rect", {"id": "a", "x": "0", "y": "0", "width": "10", "height": "10"}),
@@ -768,7 +775,7 @@ class PanelGraphTests(unittest.TestCase):
             graph = PanelGraph(source)
             self.assertEqual(len(graph.seams), 4)
             self.assertEqual(graph.contacts, [])
-            self.assertTrue(any("cyclic" in warning for warning in graph.contact_warnings))
+            self.assertTrue(any("Inconsistent fold cycle" in warning for warning in graph.contact_warnings))
 
     def test_cli_safety_json_and_validation(self):
         command = [sys.executable, str(ROOT / "boxxer.py")]

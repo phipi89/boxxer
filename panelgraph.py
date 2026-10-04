@@ -22,10 +22,18 @@ from shapely.ops import nearest_points, unary_union
 from svgpathtools import Arc, CubicBezier, Line, Path, QuadraticBezier, parse_path
 from svgpathtools.path import transform as transform_path
 
+from corners import INKSCAPE, CornerTreatment, lpe_attributes, parse_corner_lpe, rounded_path
+from features import boundary_cutouts, map_internal
+from flaps import shortening_plan
+from foldguides import attach_guides, expand_symmetry, guide_for, rotation_guide_for
+from foldstack import shifted_scores, stack_plan
+from fingercuts import apply_cutouts, settings as finger_settings
+
 SVG = "http://www.w3.org/2000/svg"
 BOXXER = "https://boxxer.local/ns/1"
 ET.register_namespace("", SVG)
 ET.register_namespace("boxxer", BOXXER)
+ET.register_namespace("inkscape", INKSCAPE)
 NUMERIC_EPS = 1e-8
 DEFAULT_NEAR = 0.01
 MAX_EMBEDDED_SOURCE_BYTES = 10_000_000
@@ -123,7 +131,8 @@ def shape_path(element) -> Path:
 
 def sample_segment(segment, resolution=0.03) -> list[tuple[float, float]]:
     count = 1 if isinstance(segment, Line) else max(8, math.ceil(segment.length(error=1e-5)/resolution))
-    return [(segment.point(i/count).real, segment.point(i/count).imag) for i in range(count+1)]
+    points = [segment.start]+[segment.point(i/count) for i in range(1, count)]+[segment.end]
+    return [(point.real, point.imag) for point in points]
 
 
 def polygon_for(path: Path) -> Polygon:
@@ -151,6 +160,8 @@ class SourceShape:
     polygon: Polygon
     outside_hint: bool
     order: int
+    feature: str = "auto"
+    corner_treatments: dict[int, CornerTreatment] = field(default_factory=dict)
 
 
 @dataclass
@@ -161,6 +172,18 @@ class Panel:
     outside_hint: bool = False
     internal: list[SourceShape] = field(default_factory=list)
     order: int = 0
+    corner_treatments: dict[int, CornerTreatment] = field(default_factory=dict)
+
+
+@dataclass
+class Fragment:
+    owner: str
+    segment: object
+    start_treatment: CornerTreatment | None = None
+    end_treatment: CornerTreatment | None = None
+
+    def reversed(self):
+        return Fragment(self.owner, self.segment.reversed(), self.end_treatment, self.start_treatment)
 
 
 @dataclass
@@ -175,6 +198,8 @@ class Seam:
     interval_b: tuple[float, float]
     discrepancy: float
     repaired: bool
+    angle: int = 90
+    annotated: bool = False
 
     @property
     def length(self):
@@ -314,6 +339,9 @@ class PanelGraph:
             self.source_bytes = input_bytes
             self.source_name = _source_name or self.filename.name
         self.resize_metadata = self.compiled_settings.get("resize")
+        self.finger_cutout_settings = finger_settings(self.compiled_settings.get("finger_cutout"))
+        self.flap_adjustments = (self.resize_metadata.get("flap_shortening", [])
+                                 if isinstance(self.resize_metadata, dict) else [])
         stored_options = self.compiled_settings.get("compiler_options", {})
         if not isinstance(stored_options, dict):
             raise ValueError("Compiled SVG compiler_options must be an object")
@@ -346,6 +374,10 @@ class PanelGraph:
         sx, sy = self.page[0]/viewbox[2], self.page[1]/viewbox[3]
         page_matrix = np.array([[sx, 0, -viewbox[0]*sx], [0, sy, -viewbox[1]*sy], [0, 0, 1]])
         shapes = []
+        guides = []
+        rotations = []
+        effects = {node.get("id"): node for node in root.findall(f".//{{{INKSCAPE}}}path-effect")
+                   if node.get("id")}
 
         def visit(element, parent_matrix, inherited):
             tag = element.tag.split("}")[-1]
@@ -356,21 +388,39 @@ class PanelGraph:
                 return
             current_matrix = parent_matrix@matrix(element.get("transform", ""))
             if tag in ("path", "rect", "line", "polygon", "polyline", "circle", "ellipse"):
-                path = shape_path(element)
+                corner_lpe = parse_corner_lpe(element, effects, current_matrix) if tag == "path" else None
+                path = corner_lpe[0] if corner_lpe else shape_path(element)
                 if not path:
                     return
-                path = transform_path(path, current_matrix)
+                if corner_lpe is None:
+                    path = transform_path(path, current_matrix)
                 path = Path(*(segment for segment in path if abs(segment.end-segment.start) > NUMERIC_EPS))
+                rotation = rotation_guide_for(path, current_style, element.get("id", f"rotation-{len(rotations)}"))
+                if rotation is not None:
+                    rotations.append(rotation)
+                    return
+                guide = guide_for(path, current_style, element.get("id", f"guide-{len(guides)}"))
+                if guide is not None:
+                    guides.append(guide)
+                    return
                 if not path or abs(path[0].start-path[-1].end) > NUMERIC_EPS:
                     raise ValueError(f"{element.get('id', tag)} is open; panel-source geometry must be closed")
                 path[-1] = move_segment_endpoint(path[-1], end=path[0].start)
+                feature = element.get(f"{{{BOXXER}}}feature", "auto")
+                if feature not in ("auto", "slot", "fixed"):
+                    raise ValueError(f"Unknown feature policy: {feature}")
                 shape = SourceShape(element.get("id", f"shape-{len(shapes)}"), path, polygon_for(path),
-                                    dashed(current_style), len(shapes))
+                                    dashed(current_style), len(shapes), feature,
+                                    corner_lpe[1] if corner_lpe else {})
                 shapes.append(shape)
             for child in element:
                 visit(child, current_matrix, current_style)
 
         visit(root, page_matrix, {})
+        shapes, self.fold_guides, self.mirror_axes = expand_symmetry(
+            shapes, guides, polygon_for, self.near, rotations)
+        self.rotational_symmetry = ([{"center": [rotations[0].center.real, rotations[0].center.imag],
+                                     "order": rotations[0].order}] if rotations else [])
         if not shapes:
             raise ValueError("No closed SVG shapes found")
         owners = {}
@@ -380,7 +430,8 @@ class PanelGraph:
                           and candidate.polygon.boundary.distance(child.polygon) > NUMERIC_EPS]
             if containers:
                 owners[child.id] = min(containers, key=lambda s: s.polygon.area)
-        self.panels = [Panel(s.id, s.path, s.polygon, s.outside_hint, order=s.order)
+        self.panels = [Panel(s.id, s.path, s.polygon, s.outside_hint, order=s.order,
+                             corner_treatments=s.corner_treatments)
                        for s in shapes if s.id not in owners]
         panel_by_id = {p.id: p for p in self.panels}
         for shape in shapes:
@@ -390,8 +441,10 @@ class PanelGraph:
                     owner = owners[owner.id]
                 panel_by_id[owner.id].internal.append(shape)
         self.near_seams = []
+        self.pending_seams = []
         self.seams = []
         self._detect_seams()
+        attach_guides(self.seams+self.pending_seams, self.fold_guides, self._line_match, self.near)
         self.overlaps = self._overlaps()
         self.components = self._components()
         self.structure = self._infer_structure()
@@ -427,6 +480,8 @@ class PanelGraph:
                     if repaired:
                         self.near_seams.append(row)
                         if not self.snap_near:
+                            self.pending_seams.append(Seam(f"near-fold-{len(self.pending_seams)}",
+                                first.id, second.id, curve, ia, ib, (ta0, ta1), (tb0, tb1), distance, True))
                             continue
                     self.seams.append(Seam(f"fold-{seam_index}", first.id, second.id, curve,
                                            ia, ib, (ta0, ta1), (tb0, tb1), distance, repaired))
@@ -673,21 +728,23 @@ class PanelGraph:
         transforms = {}
         warnings = []
         diagnostics = []
+        if self.structure.get("status") == "inferred":
+            principals = {self.structure["top"], self.structure["bottom"]}
+        else:
+            resize_model = self._resize_structure()
+            principals = ({resize_model["principal"]}
+                          if resize_model.get("kind") == "single" else set())
+        walls = {neighbor for principal in principals for neighbor, _ in adjacency[principal]}
+        leaf_tabs = {panel.id for panel in self.panels if len(adjacency[panel.id]) == 1 and
+                     adjacency[panel.id][0][0] in walls and panel.id not in walls}
         for component in self.components:
             root = max(component, key=lambda panel_id: by_id[panel_id].polygon.area)
-            edge_count = sum(1 for seam in self.seams
-                             if seam.panel_a in component and seam.panel_b in component)
-            if edge_count != len(component)-1:
-                warnings.append(f"Component containing {root} is cyclic; rigid contact inference skipped.")
-                continue
             transforms[root] = np.eye(4)
             queue = [root]
             visited = {root}
             while queue:
                 parent_id = queue.pop(0)
                 for child_id, seam in adjacency[parent_id]:
-                    if child_id in visited:
-                        continue
                     if not isinstance(seam.curve, Line):
                         warnings.append(f"Component containing {root} has curved fold {seam.id}; rigid contact inference skipped.")
                         transforms.pop(root, None)
@@ -702,8 +759,16 @@ class PanelGraph:
                         warnings.append(f"Cannot determine fold side for {seam.id}.")
                         queue = []
                         break
-                    transforms[child_id] = transforms[parent_id]@rotation_3d(
-                        seam.start, seam.end, math.copysign(math.pi/2, side))
+                    candidate = transforms[parent_id]@rotation_3d(
+                        seam.start, seam.end, math.copysign(1, side)*math.radians(seam.angle))
+                    if child_id in visited:
+                        if (np.max(np.abs(candidate[:3, :3]-transforms[child_id][:3, :3])) > 1e-7 or
+                                np.linalg.norm(candidate[:3, 3]-transforms[child_id][:3, 3]) > self.near*2):
+                            warning = f"Inconsistent fold cycle at {seam.id}; signed fold angles do not close."
+                            if warning not in warnings:
+                                warnings.append(warning)
+                        continue
+                    transforms[child_id] = candidate
                     visited.add(child_id)
                     queue.append(child_id)
             if len(visited) != len(component):
@@ -722,21 +787,28 @@ class PanelGraph:
             surfaces[panel.id] = (world, normal, center)
 
         contacts = []
+        signed_panels = {identifier for component in self.components
+                         if any(seam.annotated and seam.angle != 90 and seam.panel_a in component
+                                for seam in self.seams) for identifier in component}
         for panel in self.panels:
+            if panel.id in signed_panels:
+                continue
             if len(adjacency[panel.id]) != 1 or panel.id not in surfaces:
                 continue
             parent_id, seam = adjacency[panel.id][0]
-            if (self.structure.get("status") == "inferred" and
-                    parent_id in (self.structure["top"], self.structure["bottom"])):
+            if parent_id in principals:
                 # A principal's direct leaves are structural walls, not glue tabs.
                 continue
             points, normal, center = surfaces[panel.id]
             candidates = []
             for receiver in self.panels:
-                if receiver.id in (panel.id, parent_id) or receiver.id not in surfaces:
+                if (receiver.id in (panel.id, parent_id) or receiver.id not in surfaces or
+                        receiver.id in leaf_tabs):
                     continue
                 # Near-equal panels are peer walls, not a tab and receiving face.
-                if receiver.polygon.area <= panel.polygon.area*1.05+NUMERIC_EPS:
+                # Recognised shell walls have a topological role; a nearly full-
+                # coverage tab must still contact them, even when areas match.
+                if receiver.id not in walls and receiver.polygon.area <= panel.polygon.area*1.05+NUMERIC_EPS:
                     continue
                 other, other_normal, other_center = surfaces[receiver.id]
                 if abs(abs(float(np.dot(normal, other_normal)))-1) > 1e-7:
@@ -773,7 +845,85 @@ class PanelGraph:
                 warnings.append(f"Leaf panel {panel.id} has multiple possible receiving panels; no compensation will be applied.")
             elif candidates:
                 warnings.append(f"Leaf panel {panel.id} has only cross-shell receiving panels; no compensation will be applied.")
+        self._folded_transforms = transforms
         return contacts, warnings, diagnostics
+
+    def _shortened_flaps(self):
+        paths, adjustments = shortening_plan(self.panels, self.seams, self.contacts,
+                                             self._folded_transforms, polygon_for)
+        if not adjustments:
+            return self
+        records = []
+        for panel in self.panels:
+            if panel.id in paths and panel.corner_treatments:
+                raise ValueError(f"Cannot shorten flap {panel.id} while preserving its editable corners")
+            records.append((panel.order, panel.id, paths.get(panel.id, panel.path), panel.outside_hint,
+                            "auto", panel.corner_treatments))
+            records.extend((shape.order, shape.id, shape.path, shape.outside_hint, shape.feature,
+                            shape.corner_treatments)
+                           for shape in panel.internal)
+        root = self._source_document(records)
+        adjusted = PanelGraph(self.source_name, self.near, self.snap_near,
+                              _source_bytes=ET.tostring(root, encoding="utf-8", xml_declaration=True),
+                              _source_name=self.source_name)
+        source_pairs = {(seam.panel_a, seam.panel_b) for seam in self.seams}
+        target_pairs = {(seam.panel_a, seam.panel_b) for seam in adjusted.seams}
+        source_contacts = {(row.tab, row.receiver, row.placement) for row in self.contacts}
+        target_contacts = {(row.tab, row.receiver, row.placement) for row in adjusted.contacts}
+        if source_pairs != target_pairs or source_contacts != target_contacts or adjusted.contact_warnings:
+            raise ValueError("Flap shortening changes fold topology or tab contacts")
+        if adjusted.overlaps or len(adjusted.panels) != len(self.panels):
+            raise ValueError("Flap shortening changes material topology")
+        adjusted.resize_metadata = self.resize_metadata
+        adjusted.finger_cutout_settings = dict(self.finger_cutout_settings)
+        adjusted.flap_adjustments = self.flap_adjustments+adjustments
+        _, remaining = shortening_plan(adjusted.panels, adjusted.seams, adjusted.contacts,
+                                       adjusted._folded_transforms, polygon_for)
+        if remaining:
+            raise ValueError("Shortened native flap profiles still overlap after folding")
+        return adjusted
+
+    def _source_document(self, records, mappers=None):
+        root = ET.Element(f"{{{SVG}}}svg", width=f"{self.page[0]:g}mm", height=f"{self.page[1]:g}mm",
+                          viewBox=f"0 0 {self.page[0]:g} {self.page[1]:g}")
+        defs = None
+        for effect_index, (_, shape_id, path, outside, feature, treatments) in enumerate(sorted(records)):
+            attributes = {"id": shape_id, "fill": "none", "stroke": "#000000"}
+            rendered = rounded_path(path, treatments)
+            attributes["d"] = rendered.d()
+            if outside:
+                attributes["stroke-dasharray"] = "1,1"
+            if feature != "auto":
+                attributes[f"{{{BOXXER}}}feature"] = feature
+            if treatments:
+                effect_id = f"boxxer-corners-{effect_index}"
+                effect, path_attributes = lpe_attributes(treatments, path, effect_id)
+                if defs is None:
+                    defs = ET.Element(f"{{{SVG}}}defs")
+                ET.SubElement(defs, f"{{{INKSCAPE}}}path-effect", effect)
+                attributes.update(path_attributes)
+                attributes[f"{{{INKSCAPE}}}original-d"] = path.d()
+            ET.SubElement(root, f"{{{SVG}}}path", **attributes)
+        if defs is not None:
+            root.insert(0, defs)
+        identifiers = {record[1] for record in records}
+        for seam in self.seams:
+            if not seam.annotated:
+                continue
+            mapper = mappers[seam.panel_a] if mappers else lambda point: point
+            start, end = mapper(seam.start), mapper(seam.end)
+            guide = Path(Line(start, end))
+            if abs(seam.angle) == 180:
+                guide.append(Line(end, start))
+            identifier = f"boxxer-guide-{seam.id}"
+            while identifier in identifiers:
+                identifier += "-copy"
+            identifiers.add(identifier)
+            attributes = {"id": identifier, "d": guide.d(), "fill": "none", "stroke": "#ff0000"}
+            if seam.angle < 0:
+                attributes["stroke-dasharray"] = "1,1"
+            ET.SubElement(root, f"{{{SVG}}}path", attributes)
+        return root
 
     def compensation_plan(self, thickness=None, fold_offset=0.0):
         thickness = 0.0 if thickness is None else thickness
@@ -862,7 +1012,7 @@ class PanelGraph:
                     side = np.cross(np.array([edge.real, edge.imag, 0]),
                                     np.array([interior.real, interior.imag, 0]))[2]
                     transforms[child_id] = transforms[parent_id]@rotation_3d(
-                        curve.start, curve.end, math.copysign(math.pi/2, side))
+                        curve.start, curve.end, math.copysign(1, side)*math.radians(seam.angle))
                     visited.add(child_id)
                     queue.append(child_id)
         results = []
@@ -974,9 +1124,13 @@ class PanelGraph:
 
     @staticmethod
     def _mapped_path(path, mapper, *, preserve_curves=True):
-        """Map structural vertices while translating curved features rigidly."""
-        curve_offsets = {}
-        remaining = {index for index, segment in enumerate(path) if not isinstance(segment, Line)}
+        """Map structural vertices while translating edge features rigidly."""
+        feature_offsets = {}
+        groups = (boundary_cutouts(path, counterclockwise=polygon_for(path).exterior.is_ccw)
+                  if preserve_curves else [])
+        covered = set().union(*groups) if groups else set()
+        remaining = {index for index, segment in enumerate(path)
+                     if not isinstance(segment, Line) and index not in covered}
         while remaining:
             group, stack = set(), [next(iter(remaining))]
             while stack:
@@ -988,6 +1142,8 @@ class PanelGraph:
                 for neighbor in ((index-1) % len(path), (index+1) % len(path)):
                     if neighbor in remaining:
                         stack.append(neighbor)
+            groups.append(group)
+        for group in groups:
             boundary_anchors = []
             for index in group:
                 if (index-1) % len(path) not in group:
@@ -997,19 +1153,31 @@ class PanelGraph:
             anchors = boundary_anchors or [path[index].point(0.5) for index in group]
             anchor = sum(anchors, 0j)/len(anchors)
             offset = mapper(anchor)-anchor
-            curve_offsets.update({index: offset for index in group})
+            if len(boundary_anchors) == 2:
+                first = next(index for index in group if (index-1) % len(path) not in group)
+                last = next(index for index in group if (index+1) % len(path) not in group)
+                before, after = path[(first-1) % len(path)], path[(last+1) % len(path)]
+                span = after.end-before.start
+                if isinstance(before, Line) and isinstance(after, Line) and abs(span) > NUMERIC_EPS:
+                    # A cutout on a straight edge keeps its fractional attachment
+                    # point, even if the structural mapper has fixed end reliefs.
+                    if all(abs(((point-before.start)/span).imag) <= NUMERIC_EPS
+                           for point in (before.end, after.start)):
+                        fraction = ((anchor-before.start)/span).real
+                        offset = mapper(before.start)+(mapper(after.end)-mapper(before.start))*fraction-anchor
+            feature_offsets.update({index: offset for index in group})
         segments = []
         for index, segment in enumerate(path):
-            if preserve_curves and not isinstance(segment, Line):
-                segments.append(transform_path(Path(segment), translation_2d(curve_offsets[index]))[0])
+            if preserve_curves and index in feature_offsets:
+                segments.append(transform_path(Path(segment), translation_2d(feature_offsets[index]))[0])
             else:
                 segments.append(Line(mapper(segment.start), mapper(segment.end)))
         for index in range(len(segments)):
             following = (index+1) % len(segments)
             source_join = path[index].end
-            if preserve_curves and not isinstance(path[index], Line):
+            if preserve_curves and index in feature_offsets:
                 join = segments[index].end
-            elif preserve_curves and not isinstance(path[following], Line):
+            elif preserve_curves and following in feature_offsets:
                 join = segments[following].start
             else:
                 join = mapper(source_join)
@@ -1039,6 +1207,9 @@ class PanelGraph:
 
         by_id = {panel.id: panel for panel in self.panels}
 
+        gusset_resize = (model["kind"] == "single" and len(self.seams) >= len(self.panels) and
+                         any(seam.annotated and abs(seam.angle) == 180 for seam in self.seams))
+
         def reliefs(panel_ids, bounds, wall_height):
             x0, y0, x1, y1 = bounds
             points = [point for panel_id in panel_ids for segment in by_id[panel_id].path
@@ -1056,6 +1227,8 @@ class PanelGraph:
             x0, y0, x1, y1 = bounds
             dw, dl, dh = new_width-(x1-x0), new_length-(y1-y0), new_height-old_height
             left_relief, right_relief, end_relief = reliefs(panel_ids, bounds, old_height)
+            if gusset_resize:
+                left_relief = right_relief = end_relief = 0
             if new_height <= max(left_relief, right_relief, end_relief)+self.near:
                 raise ValueError("Requested height is smaller than fixed tab reliefs")
 
@@ -1070,10 +1243,10 @@ class PanelGraph:
                 else:
                     xx = x+dw*((x-x0)/(x1-x0)-0.5)
                 if y < y0:
-                    yy = y-dh*max(0, y0-y-end_relief)/(old_height-end_relief) if x0-self.near <= x <= x1+self.near else y
+                    yy = y-dh*max(0, y0-y-end_relief)/(old_height-end_relief) if gusset_resize or x0-self.near <= x <= x1+self.near else y
                 elif y > y1:
                     yy = y+dl+(dh*max(0, y-y1-end_relief)/(old_height-end_relief)
-                               if x0-self.near <= x <= x1+self.near else 0)
+                               if gusset_resize or x0-self.near <= x <= x1+self.near else 0)
                 else:
                     denominator = y1-y0-2*end_relief
                     t = min(1, max(0, (y-y0-end_relief)/denominator)) if denominator > self.near else (y-y0)/(y1-y0)
@@ -1173,21 +1346,33 @@ class PanelGraph:
             mapper = mappers.get(panel.id)
             if mapper is None:
                 raise ValueError(f"Cannot assign resize role to panel {panel.id}")
-            records.append((panel.order, panel.id, self._mapped_path(panel.path, mapper), panel.outside_hint))
+            mapped_panel = self._mapped_path(panel.path, mapper)
+            if gusset_resize:
+                x0, y0, x1, y1 = model["bounds"]
+                center = panel.polygon.centroid
+                if (center.x < x0 or center.x > x1) and (center.y < y0 or center.y > y1):
+                    # A corner gusset is structural geometry. Scale it uniformly
+                    # about its base corner so its diagonal and curved free edge
+                    # remain shared exactly, rather than treating it as a notch.
+                    anchor = complex(x0 if center.x < x0 else x1, y0 if center.y < y0 else y1)
+                    scale = effective["height"]/model["dimensions"]["height"]
+                    transform = translation_2d(mapper(anchor))@np.diag([scale, scale, 1])@translation_2d(-anchor)
+                    mapped_panel = transform_path(panel.path, transform)
+                    mapper = lambda point, transform=transform: transform_point(point, transform)
+                    mappers[panel.id] = mapper
+            records.append((panel.order, panel.id, mapped_panel, panel.outside_hint,
+                            "auto", panel.corner_treatments))
             for shape in panel.internal:
-                centroid = complex(*shape.polygon.centroid.coords[0])
-                path = transform_path(shape.path, translation_2d(mapper(centroid)-centroid))
-                records.append((shape.order, shape.id, path, shape.outside_hint))
+                path = map_internal(shape.path, panel.path, mapped_panel, mapper,
+                                    policy=shape.feature, tolerance=self.near)
+                records.append((shape.order, shape.id, path, shape.outside_hint,
+                                shape.feature, shape.corner_treatments))
                 owners[shape.id] = panel.id
-        root = ET.Element(f"{{{SVG}}}svg", width="210mm", height="297mm", viewBox="0 0 210 297")
-        for _, shape_id, path, outside_hint in sorted(records):
-            attributes = {"id": shape_id, "d": path.d(), "fill": "none", "stroke": "#000000"}
-            if outside_hint:
-                attributes["stroke-dasharray"] = "1,1"
-            ET.SubElement(root, f"{{{SVG}}}path", **attributes)
+        root = self._source_document(records, mappers)
         source_bytes = ET.tostring(root, encoding="utf-8", xml_declaration=True)
         resized = PanelGraph(self.source_name, self.near, self.snap_near,
                              _source_bytes=source_bytes, _source_name=self.source_name)
+        resized = resized._shortened_flaps()
         if resized.overlaps:
             raise ValueError("Resize creates overlapping panel interiors")
         if {panel.id for panel in resized.panels} != {panel.id for panel in self.panels}:
@@ -1207,7 +1392,10 @@ class PanelGraph:
                                    "source_dimensions": model["dimensions"],
                                    "effective_dimensions": effective,
                                    "reference_shell": "single" if model["kind"] == "single" else "base",
-                                   "feature_policy": "fixed-physical-size"}
+                                   "feature_policy": "anchored-slots-and-rigid-cutouts"}
+        if resized.flap_adjustments:
+            resized.resize_metadata["flap_shortening"] = resized.flap_adjustments
+        resized.finger_cutout_settings = dict(self.finger_cutout_settings)
         return resized
 
     def report(self, thickness=None, fold_offset=None, lid_clearance=None):
@@ -1216,19 +1404,29 @@ class PanelGraph:
         fold_offset = self.compiled_settings.get("fold_offset", 0) if fold_offset is None else fold_offset
         lid_clearance = self.compiled_settings.get("lid_clearance", 0) if lid_clearance is None else lid_clearance
         internals = [{"id": shape.id, "panel": panel.id, "area": shape.polygon.area,
-                      "outside_hint": shape.outside_hint}
+                      "outside_hint": shape.outside_hint, "feature": shape.feature}
                      for panel in self.panels for shape in panel.internal]
+        editable_corners = [
+            {"shape": shape.id, "vertex": index, "radius": treatment.radius}
+            for panel in self.panels for shape in [panel, *panel.internal]
+            for index, treatment in sorted(shape.corner_treatments.items())]
         return {"format": "panel-source", "source": self.source_name,
                 "page_mm": list(self.page), "panels": [
                     {"id": p.id, "area": p.polygon.area, "outside_hint": p.outside_hint,
                      "internal_geometry": [s.id for s in p.internal]} for p in self.panels],
                 "internal_geometry": internals,
                 "folds": [{"id": s.id, "panels": [s.panel_a, s.panel_b], "length": s.length,
+                           "angle": s.angle, "score_side": "front" if s.angle > 0 else "back",
                            "repaired": bool(s.repaired), "original_discrepancy": float(s.discrepancy),
                            "placement": "outside" if (next(p for p in self.panels if p.id == s.panel_a).outside_hint or
                                                         next(p for p in self.panels if p.id == s.panel_b).outside_hint) else "inside"}
                           for s in self.seams],
                 "near_edges": self.near_seams, "overlaps": self.overlaps, "components": self.components,
+                "editable_corners": editable_corners,
+                "mirror_axes": len(self.mirror_axes),
+                "rotational_symmetry": self.rotational_symmetry,
+                "finger_cutout": self.finger_cutout_settings,
+                "fold_stack": stack_plan(self, thickness, fold_offset) if not self.contact_warnings else [],
                 "structure": self.structure, "resizing": self._resize_structure(),
                 "lid_fit": self.lid_fit_plan(thickness, lid_clearance),
                 "contacts": [{"tab": c.tab, "receiver": c.receiver, "fold": c.seam,
@@ -1347,17 +1545,20 @@ class PanelGraph:
                 queue.append(child_id)
 
         if connector is None:
-            fitted_fragments = [(owner, transform_path(Path(segment), transforms[owner])[0]
-                                 if owner in transforms else segment)
-                                for owner, segment in fragments]
+            panel_paths = {panel.id: self._mapped_path(
+                panel.path, lambda point, matrix=transforms[panel.id]: transform_point(point, matrix))
+                           for panel in self.panels if panel.id in transforms}
+            fitted_fragments = self._fragments(panel_paths)
             fitted_seams = {}
             for seam in self.seams:
                 owner = seam.panel_a if seam.panel_a in transforms else seam.panel_b
                 fitted_seams[seam.id] = (transform_path(Path(seam.curve), transforms[owner])[0]
                                          if owner in transforms else seam.curve)
-            fitted_internals = [(panel_id, shape, transform_path(path, transforms[panel_id])
-                                 if panel_id in transforms else path)
-                                for panel_id, shape, path in internals]
+            fitted_internals = [(panel_id, shape, map_internal(
+                path, by_id[panel_id].path, panel_paths[panel_id],
+                lambda point, matrix=transforms[panel_id]: transform_point(point, matrix),
+                policy=shape.feature, tolerance=self.near) if panel_id in transforms else path)
+                               for panel_id, shape, path in internals]
             return fitted_fragments, fitted_seams, fitted_internals, plan
 
         top_connector = next(seam for neighbor, seam in adjacency[top] if neighbor == connector)
@@ -1389,13 +1590,12 @@ class PanelGraph:
                 raise ValueError("Lid fitting currently requires a straight-sided connector")
             return Line(map_connector_point(segment.start), map_connector_point(segment.end))
 
-        fitted_fragments = []
-        for owner, segment in fragments:
-            if owner in transforms:
-                segment = transform_path(Path(segment), transforms[owner])[0]
-            elif owner == connector:
-                segment = map_connector_segment(segment)
-            fitted_fragments.append((owner, segment))
+        panel_paths = {panel.id: self._mapped_path(
+            panel.path, lambda point, matrix=transforms[panel.id]: transform_point(point, matrix))
+                       for panel in self.panels if panel.id in transforms}
+        panel_paths[connector] = Path(*(map_connector_segment(segment)
+                                       for segment in by_id[connector].path))
+        fitted_fragments = self._fragments(panel_paths)
         fitted_seams = {}
         for seam in self.seams:
             if seam.panel_a in transforms:
@@ -1407,28 +1607,39 @@ class PanelGraph:
         fitted_internals = []
         for panel_id, shape, path in internals:
             if panel_id in transforms:
-                path = transform_path(path, transforms[panel_id])
+                path = map_internal(path, by_id[panel_id].path, panel_paths[panel_id],
+                                    lambda point: transform_point(point, transforms[panel_id]),
+                                    policy=shape.feature, tolerance=self.near)
             elif panel_id == connector:
-                path = Path(*(map_connector_segment(segment) for segment in path))
+                path = map_internal(path, by_id[panel_id].path, panel_paths[panel_id],
+                                    map_connector_point, policy=shape.feature, tolerance=self.near)
             fitted_internals.append((panel_id, shape, path))
         return fitted_fragments, fitted_seams, fitted_internals, plan
 
-    def _fragments(self):
+    def _fragments(self, panel_paths=None):
+        panel_paths = panel_paths or {}
         intervals = {(p.id, i): [] for p in self.panels for i, _ in enumerate(p.path)}
         for seam in self.seams:
             intervals[seam.panel_a, seam.segment_a].append(seam.interval_a)
             intervals[seam.panel_b, seam.segment_b].append(tuple(sorted(seam.interval_b)))
         fragments = []
         for panel in self.panels:
-            for index, segment in enumerate(panel.path):
+            for index, segment in enumerate(panel_paths.get(panel.id, panel.path)):
                 cuts = sorted(intervals[panel.id, index])
                 cursor = 0.0
                 for lo, hi in cuts:
                     if lo > cursor+NUMERIC_EPS:
-                        fragments.append((panel.id, segment.cropped(cursor, lo)))
+                        fragments.append(Fragment(
+                            panel.id, segment.cropped(cursor, lo),
+                            panel.corner_treatments.get(index) if cursor <= NUMERIC_EPS else None,
+                            panel.corner_treatments.get((index+1) % len(panel.path))
+                            if lo >= 1-NUMERIC_EPS else None))
                     cursor = max(cursor, hi)
                 if cursor < 1-NUMERIC_EPS:
-                    fragments.append((panel.id, segment.cropped(cursor, 1)))
+                    fragments.append(Fragment(
+                        panel.id, segment.cropped(cursor, 1),
+                        panel.corner_treatments.get(index) if cursor <= NUMERIC_EPS else None,
+                        panel.corner_treatments.get((index+1) % len(panel.path))))
         return fragments
 
     def _compensated_geometry(self, thickness, fold_offset, lid_clearance):
@@ -1438,11 +1649,13 @@ class PanelGraph:
         moved = []
         reliefs = []
         corner_reliefs = []
-        for owner, segment in fragments:
-            shift = shifts.get(owner, 0j)
+        for fragment in fragments:
+            shift = shifts.get(fragment.owner, 0j)
             if shift:
-                segment = transform_path(Path(segment), translation_2d(shift))[0]
-            moved.append((owner, segment))
+                fragment = Fragment(fragment.owner,
+                                    transform_path(Path(fragment.segment), translation_2d(shift))[0],
+                                    fragment.start_treatment, fragment.end_treatment)
+            moved.append(fragment)
         seam_by_id = {seam.id: seam for seam in self.seams}
         for row in plans:
             seam = seam_by_id[row["fold"]]
@@ -1460,7 +1673,8 @@ class PanelGraph:
 
                 # Move the supporting wall's remaining terminal edge as a whole.
                 parent_candidates = []
-                for index, (owner, segment) in enumerate(moved):
+                for index, fragment in enumerate(moved):
+                    owner, segment = fragment.owner, fragment.segment
                     if owner != row["parent"]:
                         continue
                     if abs(segment.start-original) <= self.near:
@@ -1471,7 +1685,8 @@ class PanelGraph:
                     raise ValueError(f"Cannot construct square-overlap wall end at "
                                      f"{original.real:.6f},{original.imag:.6f}")
                 parent_index, parent_at_start = parent_candidates[0]
-                owner, parent_segment = moved[parent_index]
+                parent_fragment = moved[parent_index]
+                owner, parent_segment = parent_fragment.owner, parent_fragment.segment
                 endpoint_tangent = parent_segment.derivative(0 if parent_at_start else 1)
                 endpoint_tangent /= abs(endpoint_tangent)
                 collinear = abs((endpoint_tangent*seam_tangent.conjugate()).imag) <= 1e-7
@@ -1480,30 +1695,34 @@ class PanelGraph:
                         raise ValueError(f"Curved supporting wall end at {original.real:.6f},"
                                          f"{original.imag:.6f} cannot be offset")
                     translated = transform_path(Path(parent_segment), translation_2d(wall_shift))[0]
-                    moved[parent_index] = (owner, translated)
+                    moved[parent_index] = Fragment(owner, translated, parent_fragment.start_treatment,
+                                                    parent_fragment.end_treatment)
                     old_far = parent_segment.end if parent_at_start else parent_segment.start
                     new_far = translated.end if parent_at_start else translated.start
                     neighbors = []
-                    for index, (neighbor_owner, neighbor) in enumerate(moved):
+                    for index, neighbor_fragment in enumerate(moved):
                         if index == parent_index:
                             continue
+                        neighbor_owner, neighbor = neighbor_fragment.owner, neighbor_fragment.segment
                         if abs(neighbor.start-old_far) <= self.near:
-                            neighbors.append((index, True, neighbor_owner, neighbor))
+                            neighbors.append((index, True, neighbor_fragment))
                         if abs(neighbor.end-old_far) <= self.near:
-                            neighbors.append((index, False, neighbor_owner, neighbor))
+                            neighbors.append((index, False, neighbor_fragment))
                     trimmed = False
                     outer_junction = None
                     if len(neighbors) == 1:
-                        index, at_start, neighbor_owner, neighbor = neighbors[0]
+                        index, at_start, neighbor_fragment = neighbors[0]
+                        neighbor_owner, neighbor = neighbor_fragment.owner, neighbor_fragment.segment
                         other = neighbor.end if at_start else neighbor.start
                         outward = other-old_far
                         if (abs(outward) > NUMERIC_EPS and
                                 abs((outward/abs(outward)*wall_shift.conjugate()).imag) <= self.near and
                                 (outward*wall_shift.conjugate()).real > 0 and
                                 abs(wall_shift) < abs(outward)-NUMERIC_EPS):
-                            moved[index] = (neighbor_owner, move_segment_endpoint(
+                            moved[index] = Fragment(neighbor_owner, move_segment_endpoint(
                                 neighbor, start=new_far) if at_start else
-                                move_segment_endpoint(neighbor, end=new_far))
+                                move_segment_endpoint(neighbor, end=new_far),
+                                neighbor_fragment.start_treatment, neighbor_fragment.end_treatment)
                             trimmed = True
                             outer_junction = new_far
                         elif isinstance(parent_segment, Line) and isinstance(neighbor, Line):
@@ -1516,16 +1735,18 @@ class PanelGraph:
                             ]))
                             if isinstance(crossing, Point):
                                 junction = complex(crossing.x, crossing.y)
-                                moved[parent_index] = (owner, move_segment_endpoint(
+                                moved[parent_index] = Fragment(owner, move_segment_endpoint(
                                     translated, end=junction) if parent_at_start else
-                                    move_segment_endpoint(translated, start=junction))
-                                moved[index] = (neighbor_owner, move_segment_endpoint(
+                                    move_segment_endpoint(translated, start=junction),
+                                    parent_fragment.start_treatment, parent_fragment.end_treatment)
+                                moved[index] = Fragment(neighbor_owner, move_segment_endpoint(
                                     neighbor, start=junction) if at_start else
-                                    move_segment_endpoint(neighbor, end=junction))
+                                    move_segment_endpoint(neighbor, end=junction),
+                                    neighbor_fragment.start_treatment, neighbor_fragment.end_treatment)
                                 trimmed = True
                                 outer_junction = junction
                     if not trimmed:
-                        moved.append((owner, Line(old_far, new_far)))
+                        moved.append(Fragment(owner, Line(old_far, new_far)))
                     elif outer_junction is not None:
                         score_ends = []
                         for score_id, curve in seams.items():
@@ -1550,12 +1771,14 @@ class PanelGraph:
                                 not any(abs(path.end-score_corner) <= self.near for path in corner_reliefs)):
                             corner_reliefs.append(Path(Line(outer_junction, score_corner)))
                 else:
-                    moved[parent_index] = (owner, move_segment_endpoint(
+                    moved[parent_index] = Fragment(owner, move_segment_endpoint(
                         parent_segment, start=landing) if parent_at_start else
-                        move_segment_endpoint(parent_segment, end=landing))
+                        move_segment_endpoint(parent_segment, end=landing),
+                        parent_fragment.start_treatment, parent_fragment.end_treatment)
 
                 tab_candidates = []
-                for index, (owner, segment) in enumerate(moved):
+                for index, fragment in enumerate(moved):
+                    owner, segment = fragment.owner, fragment.segment
                     if owner != row["tab"]:
                         continue
                     if abs(segment.start-displaced) <= self.near:
@@ -1566,10 +1789,12 @@ class PanelGraph:
                     raise ValueError(f"Cannot connect compensated tab at "
                                      f"{original.real:.6f},{original.imag:.6f}")
                 tab_index, tab_at_start = tab_candidates[0]
-                owner, tab_segment = moved[tab_index]
-                moved[tab_index] = (owner, move_segment_endpoint(
+                tab_fragment = moved[tab_index]
+                owner, tab_segment = tab_fragment.owner, tab_fragment.segment
+                moved[tab_index] = Fragment(owner, move_segment_endpoint(
                     tab_segment, start=landing) if tab_at_start else
-                    move_segment_endpoint(tab_segment, end=landing))
+                    move_segment_endpoint(tab_segment, end=landing),
+                    tab_fragment.start_treatment, tab_fragment.end_treatment)
                 if row["placement"] == "inside" and abs(displaced-landing) > NUMERIC_EPS:
                     reliefs.append(Path(Line(landing, displaced)))
         moved_internals = []
@@ -1581,28 +1806,55 @@ class PanelGraph:
 
     def _trace(self, fragments):
         """Trace exposed source segments into closed contours, preserving curves."""
-        unused = [segment for _, segment in fragments]
+        unused = list(fragments)
         paths = []
         while unused:
             chain = [unused.pop(0)]
-            while abs(chain[-1].end-chain[0].start) > self.near:
-                endpoint = chain[-1].end
-                candidates = [(i, False, s) for i, s in enumerate(unused) if abs(s.start-endpoint) <= self.near]
-                candidates += [(i, True, s) for i, s in enumerate(unused) if abs(s.end-endpoint) <= self.near]
+            while abs(chain[-1].segment.end-chain[0].segment.start) > self.near:
+                endpoint = chain[-1].segment.end
+                candidates = [(i, False, fragment) for i, fragment in enumerate(unused)
+                              if abs(fragment.segment.start-endpoint) <= self.near]
+                candidates += [(i, True, fragment) for i, fragment in enumerate(unused)
+                               if abs(fragment.segment.end-endpoint) <= self.near]
                 if len(candidates) != 1:
                     raise ValueError(f"Exposed cut boundary cannot be traced at {endpoint.real:.6f},{endpoint.imag:.6f}; "
                                      "repair near edges first or inspect overlapping panels")
-                index, reverse, segment = candidates[0]
+                index, reverse, fragment = candidates[0]
                 unused.pop(index)
-                segment = segment.reversed() if reverse else segment
-                chain.append(move_segment_endpoint(segment, start=endpoint))
-            chain[-1] = move_segment_endpoint(chain[-1], end=chain[0].start)
-            paths.append(Path(*chain))
+                fragment = fragment.reversed() if reverse else fragment
+                chain.append(Fragment(fragment.owner,
+                                      move_segment_endpoint(fragment.segment, start=endpoint),
+                                      fragment.start_treatment, fragment.end_treatment))
+            last = chain[-1]
+            chain[-1] = Fragment(last.owner,
+                                 move_segment_endpoint(last.segment, end=chain[0].segment.start),
+                                 last.start_treatment, last.end_treatment)
+            treatments = {}
+            for index, fragment in enumerate(chain):
+                previous = chain[(index-1) % len(chain)].end_treatment
+                current = fragment.start_treatment
+                if previous is not None and current is not None and previous != current:
+                    raise ValueError("Conflicting editable corner treatments meet on a cut contour")
+                if current is not None or previous is not None:
+                    treatments[index] = current or previous
+            paths.append((Path(*(fragment.segment for fragment in chain)), treatments))
         return paths
 
-    def _untangle_contour(self, path):
+    def _untangle_contour(self, path, treatments):
         """Remove small loops introduced by large compensation offsets."""
         path = Path(*path)
+        treated_points = [(path[index].start, treatment) for index, treatment in treatments.items()]
+
+        def result(candidate):
+            mapped = {}
+            for point, treatment in treated_points:
+                distances = sorted((abs(segment.start-point), index)
+                                   for index, segment in enumerate(candidate))
+                if (not distances or distances[0][0] > max(self.near, treatment.radius) or
+                        (len(distances) > 1 and abs(distances[1][0]-distances[0][0]) <= NUMERIC_EPS)):
+                    raise ValueError("Compensation removed or duplicated an editable rounded corner")
+                mapped[distances[0][1]] = treatment
+            return candidate, mapped
 
         def sampled_line(segment):
             return LineString(sample_segment(segment))
@@ -1646,7 +1898,7 @@ class PanelGraph:
                 if crossing:
                     break
             if crossing is None:
-                return path
+                return result(path)
             first, second, ta, tb = crossing
             junction = (path[first].point(ta)+path[second].point(tb))/2
             first_before = move_segment_endpoint(path[first].cropped(0, ta), end=junction)
@@ -1663,7 +1915,10 @@ class PanelGraph:
             path = outside if sampled_area(outside) >= sampled_area(loop) else loop
         raise ValueError("Compensated exterior cut contour contains too many self-intersections")
 
-    def compile(self, output, *, thickness=None, fold_offset=None, lid_clearance=None):
+    def compile(self, output, *, thickness=None, fold_offset=None, lid_clearance=None,
+                finger_cutout=None, finger_cutout_diameter=None, finger_cutout_depth=None):
+        finger_config = finger_settings(self.finger_cutout_settings, mode=finger_cutout,
+                                        diameter=finger_cutout_diameter, depth=finger_cutout_depth)
         if self.input_is_compiled:
             thickness = self.compiled_settings.get("thickness") if thickness is None else thickness
         fold_offset = self.compiled_settings.get("fold_offset", 0) if fold_offset is None else fold_offset
@@ -1673,15 +1928,29 @@ class PanelGraph:
         if self.overlaps:
             pairs = ", ".join("/".join(row["panels"]) for row in self.overlaps)
             raise ValueError(f"Panel interiors overlap: {pairs}")
+        if any("Inconsistent fold cycle" in warning for warning in self.contact_warnings):
+            raise ValueError(" ".join(self.contact_warnings))
         if thickness is not None and (not math.isfinite(thickness) or thickness < 0):
             raise ValueError("Thickness must be finite and nonnegative")
         if not math.isfinite(fold_offset):
             raise ValueError("Fold offset must be finite")
         if ((thickness or 0)+fold_offset) > NUMERIC_EPS and self.contact_warnings:
             raise ValueError("Thickness compensation is incomplete: " + " ".join(self.contact_warnings))
+        adjusted = self._shortened_flaps()
+        if adjusted is not self:
+            # Compile the adjusted geometry, but retain the original design as
+            # the reusable source. A later resize can recover its intended depth.
+            adjusted.source_bytes = self.source_bytes
+            return adjusted.compile(output, thickness=thickness, fold_offset=fold_offset,
+                                    lid_clearance=lid_clearance, finger_cutout=finger_config["mode"],
+                                    finger_cutout_diameter=finger_config["diameter"],
+                                    finger_cutout_depth=finger_config["depth"])
         fragments, seam_curves, internals, reliefs, corner_reliefs, compensation, lid_fit = self._compensated_geometry(
             thickness, fold_offset, lid_clearance)
-        contours = [self._untangle_contour(contour) for contour in self._trace(fragments)]
+        contour_data = [self._untangle_contour(contour, treatments)
+                        for contour, treatments in self._trace(fragments)]
+        sharp_contours = [contour for contour, _ in contour_data]
+        contours = [rounded_path(contour, treatments) for contour, treatments in contour_data]
         contour_polygons = []
         for contour in contours:
             try:
@@ -1696,6 +1965,16 @@ class PanelGraph:
         for first, second in combinations(contour_polygons, 2):
             if first.intersection(second).area > source_overlap+NUMERIC_EPS:
                 raise ValueError("Compensated exterior cut contours overlap")
+        fold_stack = stack_plan(self, thickness, fold_offset)
+        material = unary_union(contour_polygons)
+        for _, _, path in internals:
+            material = material.difference(polygon_for(path))
+        seam_curves = shifted_scores(self.seams, seam_curves, fold_stack, material, self.near)
+        contour_data, finger_cutouts = apply_cutouts(
+            self, contour_data, fragments, seam_curves, internals, finger_config,
+            polygon_for=polygon_for, rounded_path=rounded_path)
+        sharp_contours = [contour for contour, _ in contour_data]
+        contours = [rounded_path(contour, treatments) for contour, treatments in contour_data]
         contour_lines = [LineString([point for segment in contour for point in sample_segment(segment)])
                          for contour in contours]
         for index, path in enumerate(corner_reliefs):
@@ -1714,19 +1993,22 @@ class PanelGraph:
         min_x = min(path.bbox()[0] for path in contours)
         min_y = min(path.bbox()[2] for path in contours)
         output_offset = complex(10-min_x, 10-min_y)
+        rendered_internals = [rounded_path(path, shape.corner_treatments)
+                              for _, shape, path in internals]
         emitted_paths = (contours+[Path(curve) for curve in seam_curves.values()]+
-                         [path for _, _, path in internals]+reliefs+corner_reliefs)
+                         rendered_internals+reliefs+corner_reliefs)
         stroke_margin = 0.05
         output_bounds = (min(path.bbox()[0] for path in emitted_paths)+output_offset.real,
                          max(path.bbox()[1] for path in emitted_paths)+output_offset.real,
                          min(path.bbox()[2] for path in emitted_paths)+output_offset.imag,
                          max(path.bbox()[3] for path in emitted_paths)+output_offset.imag)
-        page_overflow = (output_bounds[0] < stroke_margin-NUMERIC_EPS or
-                         output_bounds[1] > self.page[0]-stroke_margin+NUMERIC_EPS or
-                         output_bounds[2] < stroke_margin-NUMERIC_EPS or
-                         output_bounds[3] > self.page[1]-stroke_margin+NUMERIC_EPS)
+        page_overflow = bool(output_bounds[0] < stroke_margin-NUMERIC_EPS or
+                             output_bounds[1] > self.page[0]-stroke_margin+NUMERIC_EPS or
+                             output_bounds[2] < stroke_margin-NUMERIC_EPS or
+                             output_bounds[3] > self.page[1]-stroke_margin+NUMERIC_EPS)
         output_transform = translation_2d(output_offset)
         contours = [transform_path(path, output_transform) for path in contours]
+        sharp_contours = [transform_path(path, output_transform) for path in sharp_contours]
         seam_curves = {key: transform_path(Path(curve), output_transform)[0]
                        for key, curve in seam_curves.items()}
         internals = [(panel_id, shape, transform_path(path, output_transform))
@@ -1748,7 +2030,8 @@ class PanelGraph:
                 row.pop("achieved_midplane_separation", None)
                 row.pop("residual", None)
         root = ET.Element(f"{{{SVG}}}svg", width=f"{self.page[0]:g}mm", height=f"{self.page[1]:g}mm",
-                          viewBox=f"0 0 {self.page[0]:g} {self.page[1]:g}")
+                           viewBox=f"0 0 {self.page[0]:g} {self.page[1]:g}")
+        defs = None
         metadata = {"schema": 4, "source": self.source_name, "units": "mm", "thickness": thickness,
                     "fold_offset": fold_offset, "lid_clearance": lid_clearance,
                      "compiler_options": {"near_distance": self.near, "snap_near": self.snap_near},
@@ -1759,7 +2042,12 @@ class PanelGraph:
                                 "internal_geometry": [s.id for s in p.internal]} for p in self.panels],
                     "folds": output_folds, "components": self.components,
                     "structure": self.structure, "lid_fit": lid_fit,
+                    "editable_corners": base_report["editable_corners"],
+                    "mirror_axes": base_report["mirror_axes"], "fold_stack": fold_stack,
+                    "rotational_symmetry": self.rotational_symmetry,
+                    "finger_cutout": finger_config, "finger_cutouts": finger_cutouts,
                     "contacts": base_report["contacts"],
+                    "flap_shortening": self.flap_adjustments,
                     "contact_diagnostics": self.contact_diagnostics,
                     "compensation": compensation_metadata,
                     "cut_operations": {"tab_reliefs": len(reliefs),
@@ -1775,11 +2063,31 @@ class PanelGraph:
         source_node.text = base64.b64encode(self.source_bytes).decode("ascii")
         cuts = ET.SubElement(root, f"{{{SVG}}}g", id="boxxer-cuts", stroke="#000000", fill="none",
                              **{"stroke-width": "0.1"})
-        for i, contour in enumerate(contours):
-            ET.SubElement(cuts, f"{{{SVG}}}path", id=f"cut-{i}", d=contour.d())
-        for panel_id, shape, path in internals:
-            ET.SubElement(cuts, f"{{{SVG}}}path", id=f"internal-{shape.id}", d=path.d(),
-                           **{f"{{{BOXXER}}}panel": panel_id, f"{{{BOXXER}}}source-id": shape.id})
+        for i, (contour, sharp, (_, treatments)) in enumerate(zip(contours, sharp_contours, contour_data)):
+            attributes = {"id": f"cut-{i}", "d": contour.d()}
+            if treatments:
+                effect_id = f"boxxer-cut-corners-{i}"
+                effect, path_attributes = lpe_attributes(treatments, sharp, effect_id)
+                if defs is None:
+                    defs = ET.Element(f"{{{SVG}}}defs")
+                ET.SubElement(defs, f"{{{INKSCAPE}}}path-effect", effect)
+                attributes.update(path_attributes)
+                attributes[f"{{{INKSCAPE}}}original-d"] = sharp.d()
+            ET.SubElement(cuts, f"{{{SVG}}}path", **attributes)
+        for internal_index, (panel_id, shape, path) in enumerate(internals):
+            attributes = {"id": f"internal-{shape.id}",
+                          "d": rounded_path(path, shape.corner_treatments).d(),
+                          f"{{{BOXXER}}}panel": panel_id,
+                          f"{{{BOXXER}}}source-id": shape.id}
+            if shape.corner_treatments:
+                effect_id = f"boxxer-internal-corners-{internal_index}"
+                effect, path_attributes = lpe_attributes(shape.corner_treatments, path, effect_id)
+                if defs is None:
+                    defs = ET.Element(f"{{{SVG}}}defs")
+                ET.SubElement(defs, f"{{{INKSCAPE}}}path-effect", effect)
+                attributes.update(path_attributes)
+                attributes[f"{{{INKSCAPE}}}original-d"] = path.d()
+            ET.SubElement(cuts, f"{{{SVG}}}path", **attributes)
         for i, path in enumerate(reliefs):
             ET.SubElement(cuts, f"{{{SVG}}}path", id=f"relief-{i}", d=path.d(),
                           **{f"{{{BOXXER}}}operation": "relief"})
@@ -1788,12 +2096,22 @@ class PanelGraph:
                           **{f"{{{BOXXER}}}operation": "corner-relief"})
         scores = ET.SubElement(root, f"{{{SVG}}}g", id="boxxer-scores", stroke="#ff0000", fill="none",
                                **{"stroke-width": "0.1"})
+        backside = None
+        if any(seam.angle < 0 for seam in self.seams):
+            backside = ET.SubElement(root, f"{{{SVG}}}g", id="boxxer-scores-back", stroke="#0000ff", fill="none",
+                                     **{"stroke-width": "0.1", "stroke-dasharray": "1,1"})
         for seam in self.seams:
-            ET.SubElement(scores, f"{{{SVG}}}path", id=seam.id,
+            ET.SubElement(scores if seam.angle > 0 else backside, f"{{{SVG}}}path", id=seam.id,
                           d=Path(seam_curves[seam.id]).d(),
-                          **{f"{{{BOXXER}}}panels": f"{seam.panel_a} {seam.panel_b}"})
+                            **{f"{{{BOXXER}}}panels": f"{seam.panel_a} {seam.panel_b}",
+                               f"{{{BOXXER}}}angle": str(seam.angle),
+                               f"{{{BOXXER}}}score-side": "front" if seam.angle > 0 else "back"})
+        if defs is not None:
+            root.insert(0, defs)
         ET.ElementTree(root).write(output, encoding="utf-8", xml_declaration=True)
         return {**base_report, "folds": output_folds, "compensation": compensation_metadata,
+                "finger_cutout": finger_config, "finger_cutouts": finger_cutouts,
+                "flap_shortening": self.flap_adjustments,
                 "output": str(output), "cut_contours": len(contours),
                 "internal_cuts": sum(len(p.internal) for p in self.panels),
                 "tab_relief_cuts": len(reliefs), "corner_relief_cuts": len(corner_reliefs),

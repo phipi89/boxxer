@@ -67,7 +67,8 @@ def replace_outputs(replacements):
 
 
 def resize_and_compile(graph, input_path, output, source_output, resize_options, *,
-                       thickness, fold_offset, lid_clearance):
+                       thickness, fold_offset, lid_clearance, finger_cutout=None,
+                       finger_cutout_diameter=None, finger_cutout_depth=None):
     validate_resize_paths(input_path, output, source_output)
     resized = graph.resized(**resize_options)
     compiled_temp = temporary_output(output)
@@ -75,7 +76,9 @@ def resize_and_compile(graph, input_path, output, source_output, resize_options,
     try:
         source_temp = temporary_output(source_output) if source_output is not None else None
         report = resized.compile(compiled_temp, thickness=thickness, fold_offset=fold_offset,
-                                 lid_clearance=lid_clearance)
+                                 lid_clearance=lid_clearance, finger_cutout=finger_cutout,
+                                 finger_cutout_diameter=finger_cutout_diameter,
+                                 finger_cutout_depth=finger_cutout_depth)
         if source_temp is not None:
             source_temp.write_bytes(resized.source_bytes)
         replacements = [(compiled_temp, output)]
@@ -237,7 +240,20 @@ def interactive_session(input_path=None, registry=PRESET_REGISTRY, *, input_fn=i
     lid_clearance = 0.0
     if resize_model["kind"] != "single":
         lid_clearance = prompt_float("Lid clearance (mm)", clearance_default, minimum=0,
-                                     input_fn=input_fn, print_fn=print_fn)
+                                      input_fn=input_fn, print_fn=print_fn)
+
+    cutout_defaults = graph.finger_cutout_settings
+    while True:
+        finger_cutout = prompt_text("Finger cutout (none/one/opposing)", cutout_defaults["mode"], input_fn=input_fn)
+        if finger_cutout in ("none", "one", "opposing"):
+            break
+        print_fn("Choose none, one, or opposing.")
+    cutout_diameter, cutout_depth = cutout_defaults["diameter"], cutout_defaults["depth"]
+    if finger_cutout != "none":
+        cutout_diameter = prompt_float("Finger circle diameter (mm)", cutout_diameter, minimum=0.000001,
+                                      input_fn=input_fn, print_fn=print_fn)
+        cutout_depth = prompt_float("Finger cutout depth (mm)", cutout_depth, minimum=0.000001,
+                                   input_fn=input_fn, print_fn=print_fn)
 
     stem = Path(graph.source_name).stem
     output = Path(prompt_text("Compiled output", f"{stem}-compiled.svg", input_fn=input_fn)).expanduser()
@@ -255,6 +271,7 @@ def interactive_session(input_path=None, registry=PRESET_REGISTRY, *, input_fn=i
         print_fn(f"  {key.replace('_', ' ').title()}: {value:g} mm")
     print_fn(f"  Material thickness: {thickness:g} mm")
     print_fn(f"  Fold offset: {fold_offset:g} mm")
+    print_fn(f"  Finger cutout: {finger_cutout}")
     if resize_model["kind"] != "single":
         print_fn(f"  Lid clearance: {lid_clearance:g} mm")
     print_fn(f"  Compiled output: {output}")
@@ -264,7 +281,8 @@ def interactive_session(input_path=None, registry=PRESET_REGISTRY, *, input_fn=i
         raise InteractiveCancelled
     report = resize_and_compile(
         graph, source, output, source_output, resize_options,
-        thickness=thickness, fold_offset=fold_offset, lid_clearance=lid_clearance)
+        thickness=thickness, fold_offset=fold_offset, lid_clearance=lid_clearance,
+        finger_cutout=finger_cutout, finger_cutout_diameter=cutout_diameter, finger_cutout_depth=cutout_depth)
     print_report(report)
     return report
 
@@ -279,13 +297,18 @@ def print_report(report):
         print(f"  {panel['id']}: {panel['area']:.3f} mm²{hint}{internals}")
     for fold in report["folds"]:
         repaired = f"; repaired {fold['original_discrepancy']:.6f} mm discrepancy" if fold["repaired"] else ""
-        print(f"  {fold['id']}: {fold['panels'][0]} ↔ {fold['panels'][1]}, {fold['length']:.3f} mm, {fold['placement']}{repaired}")
+        print(f"  {fold['id']}: {fold['panels'][0]} ↔ {fold['panels'][1]}, {fold['length']:.3f} mm, "
+              f"{fold['angle']:+d}°, {fold['score_side']}-side score, {fold['placement']}{repaired}")
     for edge in report["near_edges"]:
         status = "Repaired near edges" if any(f["repaired"] and f["panels"] == edge["panels"] for f in report["folds"]) else "Warning: near edges"
         print(f"{status} {edge['panels'][0]} / {edge['panels'][1]}: "
               f"{edge['length']:.3f} mm overlap at {edge['distance']:.6f} mm separation")
     for overlap in report["overlaps"]:
         print(f"Error: panels {overlap['panels'][0]} / {overlap['panels'][1]} overlap by {overlap['area']:.6f} mm²")
+    if report.get("editable_corners"):
+        print(f"Editable Inkscape corners: {len(report['editable_corners'])}")
+        for corner in report["editable_corners"]:
+            print(f"  {corner['shape']} vertex {corner['vertex']}: {corner['radius']:.3f} mm")
     if report.get("contacts"):
         print(f"Inferred glue-tab contacts: {len(report['contacts'])}")
         for contact in report["contacts"]:
@@ -317,6 +340,24 @@ def print_report(report):
                   f"distance {row['distance']:.3f} mm")
     for warning in report["warnings"]:
         print("Warning:", warning)
+    if report.get("mirror_axes"):
+        print(f"Expanded mirror axes: {report['mirror_axes']}")
+    for symmetry in report.get("rotational_symmetry", []):
+        print(f"Expanded rotational symmetry: {symmetry['order']} copies")
+    for cutout in report.get("finger_cutouts", []):
+        if cutout["status"] == "applied":
+            cropped = "; cropped for 3 mm clearance" if cutout["cropped"] else ""
+            print(f"Finger cutout {cutout['panel']}: {cutout['mouth_width']:.3f} mm wide, "
+                  f"{cutout['depth']:.3f} mm deep{cropped}")
+        else:
+            print(f"Finger cutout {cutout['panel']} omitted: {cutout['reason']}")
+    for row in report.get("fold_stack", []):
+        if row["distance"] > 1e-8:
+            print(f"Fold stack {row['fold']}: shift score by "
+                  f"({row['shift'][0]:.3f}, {row['shift'][1]:.3f}) mm ({row['score_side']} side)")
+    for row in report.get("flap_shortening", []):
+        print(f"Shortened flap {row['tab']} on {row['receiver']}: "
+              f"{row['original_depth']:.3f} → {row['depth']:.3f} mm to avoid overlap")
     if "output" in report:
         print(f"Wrote {report['output']}: {report['cut_contours']} cut contour(s), "
               f"{report['internal_cuts']} internal cut(s), {report['relief_cuts']} relief cut(s), "
@@ -344,6 +385,12 @@ def main():
                              help="Additional per-side clearance for an inferred outer lid in mm")
         if name in ("compile", "resize"):
             command.add_argument("--output", "-o", type=Path, required=True)
+            command.add_argument("--finger-cutout", nargs="?", const="one", choices=("none", "one", "opposing"),
+                                 help="Add a finger opening on the top free flap, or on two opposing flaps")
+            command.add_argument("--finger-cutout-diameter", type=float,
+                                 help="Finger-circle diameter in mm (default 30)")
+            command.add_argument("--finger-cutout-depth", type=float,
+                                 help="Penetration into the free edge in mm (default 10; leaves 3 mm material)")
         if name == "resize":
             command.add_argument("--width", type=float, help="Nominal base/principal fold-to-fold width in mm")
             command.add_argument("--length", type=float, help="Nominal base/principal fold-to-fold length in mm")
@@ -381,10 +428,14 @@ def main():
                     {"width": args.width, "length": args.length, "height": args.height,
                      "base_height": args.base_height, "lid_height": args.lid_height,
                      "connector_depth": args.connector_depth},
-                    thickness=thickness, fold_offset=fold_offset, lid_clearance=lid_clearance)
+                    thickness=thickness, fold_offset=fold_offset, lid_clearance=lid_clearance,
+                    finger_cutout=args.finger_cutout, finger_cutout_diameter=args.finger_cutout_diameter,
+                    finger_cutout_depth=args.finger_cutout_depth)
             else:
                 report = graph.compile(args.output, thickness=thickness, fold_offset=fold_offset,
-                                       lid_clearance=lid_clearance)
+                                       lid_clearance=lid_clearance, finger_cutout=args.finger_cutout,
+                                       finger_cutout_diameter=args.finger_cutout_diameter,
+                                       finger_cutout_depth=args.finger_cutout_depth)
         if args.json:
             print(json.dumps(report, indent=2))
         else:

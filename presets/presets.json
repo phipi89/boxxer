@@ -17,5 +17,12 @@
     "source": "connected-lid-box.svg",
     "thickness": 0.5,
     "lid_clearance": 0.0
+  },
+  {
+    "name": "Glue-free gusset tray",
+    "description": "Mirrored corner gussets with front- and backside folds",
+    "source": "gluefree.svg",
+    "thickness": 0.4,
+    "fold_offset": 0.0
   }
 ]
