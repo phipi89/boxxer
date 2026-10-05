@@ -8,9 +8,12 @@ import sys
 import tempfile
 import xml.etree.ElementTree as ET
 
-from panelgraph import DEFAULT_NEAR, PanelGraph
+from .panelgraph import DEFAULT_NEAR, PanelGraph
 
-PRESET_REGISTRY = Path(__file__).parent / "presets" / "presets.json"
+# Editable checkouts use repository sketches; wheels bundle the same presets.
+PRESET_DIRECTORY = Path(__file__).parent / "presets"
+if not PRESET_DIRECTORY.is_dir():
+    PRESET_DIRECTORY = Path(__file__).resolve().parents[2] / "presets"
 
 
 class InteractiveCancelled(Exception):
@@ -93,33 +96,15 @@ def resize_and_compile(graph, input_path, output, source_output, resize_options,
             source_temp.unlink(missing_ok=True)
 
 
-def load_presets(registry=PRESET_REGISTRY):
-    registry = Path(registry)
-    try:
-        data = json.loads(registry.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Preset registry contains invalid JSON: {registry}") from exc
-    if not isinstance(data, list):
-        raise ValueError("Preset registry must contain a JSON array")
-    presets = []
-    for index, item in enumerate(data, 1):
-        if not isinstance(item, dict) or not isinstance(item.get("name"), str) or not isinstance(item.get("source"), str):
-            raise ValueError(f"Preset {index} requires string name and source properties")
-        source = (registry.parent / item["source"]).resolve()
-        if not source.is_file():
-            raise ValueError(f"Preset source does not exist: {source}")
-        preset = dict(item)
-        preset["source"] = source
-        for key in ("thickness", "fold_offset", "lid_clearance"):
-            value = preset.get(key)
-            if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float)) or
-                                      not math.isfinite(value)):
-                raise ValueError(f"Preset {index} {key} must be a finite number")
-        if ((preset.get("thickness") is not None and preset["thickness"] < 0) or
-                (preset.get("lid_clearance") is not None and preset["lid_clearance"] < 0)):
-            raise ValueError(f"Preset {index} thickness and lid_clearance must be nonnegative")
-        presets.append(preset)
-    return presets
+def load_presets(directory=PRESET_DIRECTORY):
+    directory = Path(directory).expanduser()
+    if not directory.is_dir():
+        raise ValueError(f"Preset directory does not exist: {directory}")
+    sources = sorted((source for source in directory.iterdir()
+                      if source.is_file() and source.suffix.lower() == ".svg"),
+                     key=lambda source: (source.name.casefold(), source.name))
+    return [{"name": source.stem.replace("-", " ").replace("_", " ").capitalize(),
+             "source": source.resolve()} for source in sources]
 
 
 def prompt_text(label, default=None, *, input_fn=input):
@@ -161,10 +146,10 @@ def prompt_yes_no(label, default=True, *, input_fn=input, print_fn=print):
         print_fn("Enter y or n, or q to cancel.")
 
 
-def choose_interactive_source(input_path, registry, *, input_fn=input, print_fn=print):
+def choose_interactive_source(input_path, directory, *, input_fn=input, print_fn=print):
     if input_path is not None:
         return Path(input_path), {}
-    presets = load_presets(registry)
+    presets = load_presets(directory)
     print_fn("Available presets:")
     for index, preset in enumerate(presets, 1):
         description = f" - {preset['description']}" if preset.get("description") else ""
@@ -181,14 +166,12 @@ def choose_interactive_source(input_path, registry, *, input_fn=input, print_fn=
         print_fn(f"SVG not found: {source}")
 
 
-def interactive_session(input_path=None, registry=PRESET_REGISTRY, *, input_fn=input, print_fn=print):
+def interactive_session(input_path=None, directory=PRESET_DIRECTORY, *, input_fn=input, print_fn=print):
     print_fn("Boxxer interactive resize")
-    source, preset = choose_interactive_source(input_path, registry, input_fn=input_fn, print_fn=print_fn)
+    source, preset = choose_interactive_source(input_path, directory, input_fn=input_fn, print_fn=print_fn)
     graph = PanelGraph(source)
     if graph.near_seams and not graph.snap_near:
-        print_fn(f"Found {len(graph.near_seams)} near-coincident seam pair(s).")
-        if not prompt_yes_no("Repair these seams", input_fn=input_fn, print_fn=print_fn):
-            raise InteractiveCancelled
+        print_fn(f"Automatically repairing {len(graph.near_seams)} near-coincident seam pair(s).")
         graph = PanelGraph(source, graph.near, True)
     resize_model = graph._resize_structure()
     if resize_model["status"] != "supported":
@@ -249,11 +232,6 @@ def interactive_session(input_path=None, registry=PRESET_REGISTRY, *, input_fn=i
             break
         print_fn("Choose none, one, or opposing.")
     cutout_diameter, cutout_depth = cutout_defaults["diameter"], cutout_defaults["depth"]
-    if finger_cutout != "none":
-        cutout_diameter = prompt_float("Finger circle diameter (mm)", cutout_diameter, minimum=0.000001,
-                                      input_fn=input_fn, print_fn=print_fn)
-        cutout_depth = prompt_float("Finger cutout depth (mm)", cutout_depth, minimum=0.000001,
-                                   input_fn=input_fn, print_fn=print_fn)
 
     stem = Path(graph.source_name).stem
     output = Path(prompt_text("Compiled output", f"{stem}-compiled.svg", input_fn=input_fn)).expanduser()
@@ -403,8 +381,8 @@ def main():
     interactive = subparsers.add_parser("interactive", help="Guided resize using a preset or SVG path")
     interactive.add_argument("input", nargs="?", type=Path,
                              help="SVG to resize; omit to choose a preset or enter a path")
-    interactive.add_argument("--presets", type=Path, default=PRESET_REGISTRY,
-                             help="Preset registry JSON path")
+    interactive.add_argument("--presets", type=Path, default=PRESET_DIRECTORY,
+                             help="Directory of SVG sketches to list as presets")
     args = parser.parse_args()
     try:
         if args.command == "interactive":

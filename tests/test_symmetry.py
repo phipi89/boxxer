@@ -6,9 +6,9 @@ import xml.etree.ElementTree as ET
 
 from svgpathtools import Arc, Path
 
-from foldguides import rotation_guide_for
-from panelgraph import PanelGraph, SVG
-from test_folds import quarter
+from boxxer.foldguides import rotation_guide_for
+from boxxer.panelgraph import PanelGraph, SVG
+from tests.test_folds import quarter
 
 
 def rotation_marker(center=20+20j, order=4, radius=15):
@@ -89,6 +89,26 @@ class RotationTests(unittest.TestCase):
         ET.SubElement(root, f"{{{SVG}}}path", id="conflict", d="M30 10 H34")
         with self.assertRaisesRegex(ValueError, "Conflicting"):
             PanelGraph("generated.svg", _source_bytes=ET.tostring(root))
+
+    def test_equal_area_and_tall_walls_keep_principal_and_stack_anchor(self):
+        for width, length, height in ((50, 50, 50), (40, 45, 60)):
+            for perturb in (False, True):
+                root = ET.fromstring(cyclic_corner())
+                if perturb:
+                    root.find(f".//{{{SVG}}}path[@id='rotation']").set(
+                        "d", rotation_marker(center=20.0002+20.0003j))
+                graph = PanelGraph("generated.svg", _source_bytes=ET.tostring(root), snap_near=True)
+                resized = graph.resized(width=width, length=length, height=height)
+                self.assertEqual(resized._resize_structure()["principal"], "base")
+                self.assertEqual(resized._fold_root(resized.components[0]), "base")
+                output = io.BytesIO()
+                report = resized.compile(output, thickness=.4, finger_cutout="opposing")
+                self.assertEqual([row["status"] for row in report["finger_cutouts"]], ["applied", "applied"])
+                base_folds = {seam.id for seam in resized.seams if "base" in (seam.panel_a, seam.panel_b)}
+                self.assertTrue(all(row["distance"] < 1e-7 for row in report["fold_stack"]
+                                    if row["fold"] in base_folds))
+                reimported = PanelGraph("compiled.svg", _source_bytes=output.getvalue())
+                self.assertEqual(reimported._resize_structure()["principal"], "base")
 
 
 if __name__ == "__main__":

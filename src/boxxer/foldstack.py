@@ -29,7 +29,7 @@ def stack_plan(graph, thickness, adjustment):
             raise ValueError("Cannot place signed-fold scores: " + " ".join(graph.contact_warnings))
         if any(not isinstance(seam.curve, Line) for seam in seams):
             raise ValueError("Signed-fold thickness placement requires straight hinges")
-        root = max(component, key=lambda identifier: (panels[identifier].polygon.area, identifier))
+        root = graph._fold_root(component)
         moving = [identifier for identifier in component if identifier != root]
         # Incidence for world-space panel translations, and the effect of each
         # planar perpendicular crease displacement on its hinge equation.

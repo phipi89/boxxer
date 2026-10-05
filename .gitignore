@@ -1,2 +1,14 @@
 .venv/
 __pycache__/
+*.py[cod]
+*.egg-info/
+.DS_Store
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+
+# Local generated output; curated examples live in examples/.
+/compiled/
+/resized-compiled.svg
+/resized-source.svg

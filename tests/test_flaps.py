@@ -4,8 +4,8 @@ import xml.etree.ElementTree as ET
 
 from svgpathtools import QuadraticBezier
 
-from panelgraph import PanelGraph, SVG
-from test_features import graph_from_shapes, tray_shapes
+from boxxer.panelgraph import PanelGraph, SVG
+from tests.test_features import graph_from_shapes, tray_shapes
 
 
 def flap_shapes(first=20, second=20):
@@ -33,7 +33,7 @@ class FlapTests(unittest.TestCase):
         separated = graph_from_shapes(flap_shapes(14, 14))
         self.assertIs(separated._shortened_flaps(), separated)
         shapes = flap_shapes()
-        shapes[-1][1]["stroke-dasharray"] = "1,1"
+        shapes[-1][1]["fill"] = "#eaeaea"
         opposite = graph_from_shapes(shapes)
         self.assertIs(opposite._shortened_flaps(), opposite)
 

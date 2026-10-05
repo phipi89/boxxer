@@ -10,8 +10,8 @@ import xml.etree.ElementTree as ET
 import numpy as np
 from svgpathtools import CubicBezier, Line, Path, parse_path
 
-from foldguides import guide_for
-from panelgraph import BOXXER, SVG, PanelGraph, rotation_3d
+from boxxer.foldguides import guide_for
+from boxxer.panelgraph import BOXXER, SVG, PanelGraph, rotation_3d
 
 
 def quarter(transform="", reverse=False):
@@ -172,7 +172,7 @@ class FoldSketchTests(unittest.TestCase):
         g.compile(io.BytesIO(), thickness=.4)
 
     def test_actual_inkscape_gluefree_sketch(self):
-        source = FilePath(__file__).parent/"presets"/"gluefree.svg"
+        source = FilePath(__file__).resolve().parents[1]/"presets"/"gluefree.svg"
         g = PanelGraph(source, snap_near=True)
         self.assertEqual(len(g.panels), 13)
         self.assertEqual(len(g.seams), 16)
@@ -184,14 +184,15 @@ class FoldSketchTests(unittest.TestCase):
         self.assertEqual(result["internal_cuts"], 4)
         self.assertEqual(result["cut_contours"], 1)
 
-    def test_gluefree_interactive_preset_and_near_repair(self):
-        from boxxer import interactive_session
+    def test_generated_signed_fold_interactive_preset(self):
+        from boxxer.cli import interactive_session
         with tempfile.TemporaryDirectory() as directory:
             target = FilePath(directory)/"compiled.svg"
             editable = FilePath(directory)/"editable.svg"
-            answers = iter(["4", "y", "120", "80", "30", "", "", "", str(target), str(editable), "y"])
+            (FilePath(directory)/"signed-tray.svg").write_bytes(quarter())
+            answers = iter(["1", "120", "80", "30", ".4", "", "", str(target), str(editable), "y"])
             with redirect_stdout(io.StringIO()):
-                result = interactive_session(input_fn=lambda _: next(answers), print_fn=lambda *args: None)
+                result = interactive_session(directory=directory, input_fn=lambda _: next(answers), print_fn=lambda *args: None)
             self.assertEqual(result["metadata"]["thickness"], .4)
             self.assertEqual(len(PanelGraph(editable, snap_near=True).seams), 16)
             self.assertTrue(target.exists())

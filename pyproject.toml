@@ -10,5 +10,19 @@ dependencies = [
     "svgpathtools>=1.8,<2",
 ]
 
-[tool.uv]
-package = false
+[project.scripts]
+boxxer = "boxxer.cli:main"
+
+[build-system]
+requires = ["hatchling>=1.26,<2"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/boxxer"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"presets" = "boxxer/presets"
+
+[tool.hatch.build.targets.sdist]
+include = ["src/", "presets/", "tests/", "docs/", "README.md", "pyproject.toml", "uv.lock",
+           "rotational.svg", "second.svg", "drafts/", "examples/"]

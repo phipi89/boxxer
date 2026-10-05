@@ -23,9 +23,9 @@
      inkscape:pagecheckerboard="0"
      inkscape:deskcolor="#d1d1d1"
      inkscape:document-units="mm"
-     inkscape:zoom="1.0014411"
-     inkscape:cx="334.01864"
-     inkscape:cy="297.07189"
+     inkscape:zoom="0.8484514"
+     inkscape:cx="265.77833"
+     inkscape:cy="242.20598"
      inkscape:window-width="1710"
      inkscape:window-height="1044"
      inkscape:window-x="0"
@@ -61,21 +61,21 @@
      inkscape:groupmode="layer"
      id="layer1">
     <rect
-       style="opacity:0.289157;fill:none;stroke:#000000;stroke-width:1;stroke-linecap:square;stroke-linejoin:miter;stroke-dasharray:none;stroke-opacity:1;paint-order:markers fill stroke"
+       style="opacity:1;fill:none;stroke:#000000;stroke-width:1;stroke-linecap:square;stroke-linejoin:miter;stroke-dasharray:none;stroke-opacity:1;paint-order:markers fill stroke"
        id="rect1"
        width="100"
        height="100"
        x="60.513519"
        y="60.334133" />
     <rect
-       style="opacity:0.289157;fill:none;stroke:#000000;stroke-width:1;stroke-linecap:square;stroke-linejoin:miter;stroke-dasharray:none;stroke-opacity:1;paint-order:markers fill stroke"
+       style="opacity:1;fill:none;stroke:#000000;stroke-width:1;stroke-linecap:square;stroke-linejoin:miter;stroke-dasharray:none;stroke-opacity:1;paint-order:markers fill stroke"
        id="rect2"
        width="100"
        height="20"
        x="60.513519"
        y="40.334133" />
     <rect
-       style="opacity:0.289157;fill:none;stroke:#000000;stroke-width:1;stroke-linecap:square;stroke-linejoin:miter;stroke-dasharray:none;stroke-opacity:1;paint-order:markers fill stroke"
+       style="opacity:1;fill:none;stroke:#000000;stroke-width:1;stroke-linecap:square;stroke-linejoin:miter;stroke-dasharray:none;stroke-opacity:1;paint-order:markers fill stroke"
        id="rect3"
        width="100"
        height="20"
@@ -84,27 +84,27 @@
        transform="rotate(-90)" />
     <path
        id="rect14"
-       style="opacity:0.289157;fill:none;stroke:#000000;stroke-linecap:square;stroke-linejoin:miter;paint-order:markers fill stroke"
+       style="opacity:1;fill:none;stroke:#000000;stroke-linecap:square;stroke-linejoin:miter;paint-order:markers fill stroke"
        d="m 43.688518,43.509131 c 0,0 10.57253,-0.852717 13.112037,-1.382326 1.548002,-0.322833 3.712963,-1.792674 3.712963,-1.792674 v 20.000002 z"
        sodipodi:nodetypes="csccc" />
     <path
        id="path14"
-       style="opacity:0.289157;fill:none;stroke:#000000;stroke-linecap:square;stroke-linejoin:miter;paint-order:markers fill stroke"
+       style="opacity:1;fill:none;stroke:#000000;stroke-linecap:square;stroke-linejoin:miter;paint-order:markers fill stroke"
        d="m 43.688517,43.509132 c 0,0 -0.852717,10.57253 -1.382326,13.112037 -0.322833,1.548002 -1.792674,3.712963 -1.792674,3.712963 h 20.000002 z"
        sodipodi:nodetypes="csccc" />
     <rect
-       style="opacity:0.289157;fill:none;stroke:#000000;stroke-width:1;stroke-linejoin:miter;paint-order:markers fill stroke"
+       style="opacity:1;fill:none;stroke:#000000;stroke-width:1;stroke-linejoin:miter;paint-order:markers fill stroke"
        id="rect15"
        width="1.5"
        height="14.895816"
        x="63.181854"
        y="41.99345" />
     <path
-       style="fill:none;stroke:#ff0000;stroke-width:0.264583px;stroke-linecap:butt;stroke-linejoin:miter;stroke-opacity:1"
+       style="fill:none;stroke:#ff0000;stroke-width:0.264583px;stroke-linecap:butt;stroke-linejoin:miter;stroke-opacity:1;opacity:1"
        d="m 60.513518,60.334133 -16.825,-16.825002 z"
        id="path2" />
     <path
-       style="fill:none;stroke:#ff0000;stroke-width:0.264583px;stroke-linecap:butt;stroke-linejoin:miter;stroke-dasharray:0.264583, 0.264583;stroke-dashoffset:0;stroke-opacity:1"
+       style="fill:none;stroke:#ff0000;stroke-width:0.264583px;stroke-linecap:butt;stroke-linejoin:miter;stroke-dasharray:0.264583, 0.264583;stroke-dashoffset:0;stroke-opacity:1;opacity:1"
        d="m 60.513518,40.334131 v 20 z"
        id="path3" />
     <path
@@ -120,5 +120,13 @@
        sodipodi:open="true"
        sodipodi:arc-type="arc"
        d="M 7.9261322,110.33448 A 102.58744,102.58744 0 0 1 110.51357,7.7470398" />
+    <path
+       style="fill:none;stroke:#000000;stroke-width:0.165;stroke-linecap:butt;stroke-linejoin:miter;stroke-opacity:1;opacity:0.24111675;stroke-dasharray:none"
+       d="M 110.51352,0 V 120.66827"
+       id="path7" />
+    <path
+       style="fill:none;stroke:#000000;stroke-width:0.165;stroke-linecap:butt;stroke-linejoin:miter;stroke-opacity:1;opacity:0.24111675;stroke-dasharray:none"
+       d="M 0.17938679,110.33413 H 120.84765"
+       id="path8" />
   </g>
 </svg>

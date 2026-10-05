@@ -22,12 +22,12 @@ from shapely.ops import nearest_points, unary_union
 from svgpathtools import Arc, CubicBezier, Line, Path, QuadraticBezier, parse_path
 from svgpathtools.path import transform as transform_path
 
-from corners import INKSCAPE, CornerTreatment, lpe_attributes, parse_corner_lpe, rounded_path
-from features import boundary_cutouts, map_internal
-from flaps import shortening_plan
-from foldguides import attach_guides, expand_symmetry, guide_for, rotation_guide_for
-from foldstack import shifted_scores, stack_plan
-from fingercuts import apply_cutouts, settings as finger_settings
+from .corners import INKSCAPE, CornerTreatment, lpe_attributes, parse_corner_lpe, rounded_path
+from .features import boundary_cutouts, map_internal
+from .flaps import shortening_plan
+from .foldguides import attach_guides, expand_symmetry, guide_for, rotation_guide_for
+from .foldstack import shifted_scores, stack_plan
+from .fingercuts import apply_cutouts, settings as finger_settings
 
 SVG = "http://www.w3.org/2000/svg"
 BOXXER = "https://boxxer.local/ns/1"
@@ -91,7 +91,28 @@ def style_map(element, inherited: dict[str, str]) -> dict[str, str]:
         if key in element.attrib:
             result[key] = element.attrib[key]
     result.update(dict(part.strip().split(":", 1) for part in element.get("style", "").split(";") if ":" in part))
+    if result.get("fill", "").strip().lower() == "inherit":
+        if "fill" in inherited:
+            result["fill"] = inherited["fill"]
+        else:
+            result.pop("fill", None)
     return result
+
+
+def object_opacity(element, parent_opacity):
+    """SVG object opacity compounds through groups; paint opacity is separate."""
+    declarations = dict(part.strip().split(":", 1) for part in element.get("style", "").split(";") if ":" in part)
+    raw = declarations.get("opacity", element.get("opacity", "1")).strip().lower()
+    # Only fully opaque ancestors are visited, so explicit inherit is 1 here.
+    if raw in ("initial", "unset", "inherit"):
+        raw = "1"
+    try:
+        opacity = float(raw[:-1])/100 if raw.endswith("%") else float(raw)
+    except ValueError as exc:
+        raise ValueError(f"Unsupported SVG opacity: {raw}") from exc
+    if not math.isfinite(opacity):
+        raise ValueError("SVG opacity must be finite")
+    return parent_opacity*max(0, min(1, opacity))
 
 
 def shape_path(element) -> Path:
@@ -148,9 +169,11 @@ def polygon_for(path: Path) -> Polygon:
     return polygon
 
 
-def dashed(style: dict[str, str]) -> bool:
-    value = style.get("stroke-dasharray", "").strip().lower()
-    return value not in ("", "none", "0")
+def outside_fill(style: dict[str, str]) -> bool:
+    # Do not apply SVG's implicit black default: only an explicit solid paint
+    # on the object or an ancestor marks outside placement.
+    value = style.get("fill", "").strip().lower()
+    return value not in ("", "none", "initial", "unset", "inherit") and not value.startswith("url(")
 
 
 @dataclass
@@ -379,9 +402,12 @@ class PanelGraph:
         effects = {node.get("id"): node for node in root.findall(f".//{{{INKSCAPE}}}path-effect")
                    if node.get("id")}
 
-        def visit(element, parent_matrix, inherited):
+        def visit(element, parent_matrix, inherited, parent_opacity=1.0):
             tag = element.tag.split("}")[-1]
             if tag in ("defs", "metadata", "namedview"):
+                return
+            opacity = object_opacity(element, parent_opacity)
+            if opacity < 1:
                 return
             current_style = style_map(element, inherited)
             if current_style.get("display") == "none" or current_style.get("visibility") == "hidden":
@@ -410,11 +436,11 @@ class PanelGraph:
                 if feature not in ("auto", "slot", "fixed"):
                     raise ValueError(f"Unknown feature policy: {feature}")
                 shape = SourceShape(element.get("id", f"shape-{len(shapes)}"), path, polygon_for(path),
-                                    dashed(current_style), len(shapes), feature,
+                                    outside_fill(current_style), len(shapes), feature,
                                     corner_lpe[1] if corner_lpe else {})
                 shapes.append(shape)
             for child in element:
-                visit(child, current_matrix, current_style)
+                visit(child, current_matrix, current_style, opacity)
 
         visit(root, page_matrix, {})
         shapes, self.fold_guides, self.mirror_axes = expand_symmetry(
@@ -579,6 +605,15 @@ class PanelGraph:
             adjacency[seam.panel_b].append((seam.panel_a, seam))
         return adjacency
 
+    def _fold_root(self, component):
+        """Anchor a recognized tray to its principal, even when walls are larger."""
+        model = self._resize_structure()
+        if model.get("kind") == "single" and model.get("status") == "supported":
+            if model["principal"] in component:
+                return model["principal"]
+        by_id = {panel.id: panel for panel in self.panels}
+        return max(component, key=lambda identifier: (by_id[identifier].polygon.area, identifier))
+
     def _infer_structure(self):
         """Recognize connected or separate top and bottom box shells."""
         by_id = {p.id: p for p in self.panels}
@@ -738,7 +773,7 @@ class PanelGraph:
         leaf_tabs = {panel.id for panel in self.panels if len(adjacency[panel.id]) == 1 and
                      adjacency[panel.id][0][0] in walls and panel.id not in walls}
         for component in self.components:
-            root = max(component, key=lambda panel_id: by_id[panel_id].polygon.area)
+            root = self._fold_root(component)
             transforms[root] = np.eye(4)
             queue = [root]
             visited = {root}
@@ -892,7 +927,7 @@ class PanelGraph:
             rendered = rounded_path(path, treatments)
             attributes["d"] = rendered.d()
             if outside:
-                attributes["stroke-dasharray"] = "1,1"
+                attributes["fill"] = "#eaeaea"
             if feature != "auto":
                 attributes[f"{{{BOXXER}}}feature"] = feature
             if treatments:
@@ -994,7 +1029,7 @@ class PanelGraph:
             adjacency[seam.panel_b].append((seam.panel_a, seam))
         transforms = {}
         for component in self.components:
-            root = max(component, key=lambda panel_id: by_id[panel_id].polygon.area)
+            root = self._fold_root(component)
             transforms[root] = np.eye(4)
             queue, visited = [root], {root}
             while queue:
@@ -1101,22 +1136,37 @@ class PanelGraph:
 
         if len(self.components) != 1:
             return {"status": "unsupported", "reason": "cannot identify two box shells"}
-        largest = max(panel.polygon.area for panel in self.panels)
-        candidates = [panel for panel in self.panels if len(adjacency[panel.id]) >= 3 and
-                      abs(panel.polygon.area-largest) <= max(self.near**2, largest*1e-6)]
+        candidates = []
+        for panel in self.panels:
+            bounds = rectangle(panel)
+            neighbors = adjacency[panel.id]
+            if bounds is None or len(neighbors) < 3:
+                continue
+            # A principal has structural hinges on distinct sides, not merely
+            # several neighboring tabs along one terminal edge.
+            sides = []
+            for _, seam in neighbors:
+                if not isinstance(seam.curve, Line) or abs(seam.angle) != 90:
+                    break
+                middle = seam.curve.point(.5)
+                distances = [abs(middle.real-bounds[0]), abs(middle.real-bounds[2]),
+                             abs(middle.imag-bounds[1]), abs(middle.imag-bounds[3])]
+                side = min(range(4), key=distances.__getitem__)
+                if distances[side] > self.near:
+                    break
+                sides.append(side)
+            else:
+                if len(set(sides)) != len(neighbors):
+                    continue
+                try:
+                    heights = [wall_height(panel.id, neighbor) for neighbor, _ in neighbors]
+                except ValueError:
+                    continue
+                if max(heights)-min(heights) <= self.near:
+                    candidates.append((panel, bounds, heights))
         if len(candidates) != 1:
             return {"status": "unsupported", "reason": "cannot identify one rectangular principal face"}
-        principal = candidates[0]
-        bounds = rectangle(principal)
-        if bounds is None:
-            return {"status": "unsupported", "reason": "principal face must be an axis-aligned rectangle"}
-        walls = [panel_id for panel_id, _ in adjacency[principal.id]]
-        try:
-            heights = [wall_height(principal.id, wall) for wall in walls]
-        except ValueError as exc:
-            return {"status": "unsupported", "reason": str(exc)}
-        if not heights or max(heights)-min(heights) > self.near:
-            return {"status": "unsupported", "reason": "the shell must have one uniform wall height"}
+        principal, bounds, heights = candidates[0]
         return {"status": "supported", "kind": "single", "principal": principal.id,
                 "shell": self.components[0], "bounds": list(bounds),
                 "dimensions": {"width": bounds[2]-bounds[0], "length": bounds[3]-bounds[1],

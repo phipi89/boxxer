@@ -4,8 +4,8 @@ import xml.etree.ElementTree as ET
 
 from svgpathtools import Arc, Line, parse_path
 
-from corners import INKSCAPE
-from panelgraph import BOXXER, SVG, PanelGraph
+from boxxer.corners import INKSCAPE
+from boxxer.panelgraph import BOXXER, SVG, PanelGraph
 
 
 def rounded_tray():

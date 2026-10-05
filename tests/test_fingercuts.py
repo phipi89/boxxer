@@ -12,8 +12,7 @@ import xml.etree.ElementTree as ET
 from shapely.geometry import LineString
 from svgpathtools import Arc, Line, parse_path
 
-from panelgraph import BOXXER, SVG, PanelGraph, polygon_for, sample_segment
-from fingercuts import cap_path
+from boxxer.panelgraph import SVG, PanelGraph, polygon_for, sample_segment
 
 
 def tray(width=100, height=20, slot=False, rotation=""):
@@ -91,7 +90,7 @@ class FingerCutoutTests(unittest.TestCase):
             compile_source(enclosure(), finger_cutout="opposing")
 
     def test_finger_arc_and_editable_corner_radii_coexist(self):
-        from corners import INKSCAPE, CornerTreatment, DEFAULT_SATELLITE, lpe_attributes, rounded_path
+        from boxxer.corners import INKSCAPE, CornerTreatment, DEFAULT_SATELLITE, lpe_attributes, rounded_path
         root = ET.fromstring(tray())
         group = root.find(f"{{{SVG}}}g")
         north = group.find(f"{{{SVG}}}rect[@id='north']")
@@ -165,7 +164,7 @@ class FingerCutoutTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             source, output = FilePath(directory)/"source.svg", FilePath(directory)/"out.svg"
             source.write_bytes(tray())
-            command = [sys.executable, str(FilePath(__file__).parent/"boxxer.py"), "compile", str(source),
+            command = [sys.executable, "-m", "boxxer", "compile", str(source),
                        "--output", str(output), "--finger-cutout", "--json"]
             process = subprocess.run(command, text=True, capture_output=True)
             self.assertEqual(process.returncode, 0, process.stderr)
@@ -179,7 +178,7 @@ class FingerCutoutTests(unittest.TestCase):
             self.assertEqual(report["finger_cutout"]["diameter"], 20)
 
     def test_cutouts_on_repaired_rotational_edges(self):
-        from test_symmetry import cyclic_corner, rotation_marker
+        from tests.test_symmetry import cyclic_corner, rotation_marker
         root = ET.fromstring(cyclic_corner("scale(3)"))
         root.find(f".//{{{SVG}}}path[@id='rotation']").set("d", rotation_marker(center=20.0002+20.0003j))
         graph = PanelGraph("generated.svg", _source_bytes=ET.tostring(root), snap_near=True)
@@ -189,11 +188,11 @@ class FingerCutoutTests(unittest.TestCase):
 
     def test_interactive_cutout_options(self):
         from contextlib import redirect_stdout
-        from boxxer import interactive_session
+        from boxxer.cli import interactive_session
         with tempfile.TemporaryDirectory() as directory:
             source, target = FilePath(directory)/"source.svg", FilePath(directory)/"out.svg"
             source.write_bytes(tray())
-            answers = iter(["", "", "", "", "", "opposing", "", "", str(target), "", "y"])
+            answers = iter(["", "", "", "", "", "opposing", str(target), "", "y"])
             with redirect_stdout(io.StringIO()):
                 report = interactive_session(source, input_fn=lambda _: next(answers), print_fn=lambda *args: None)
             self.assertEqual(len(report["finger_cutouts"]), 2)

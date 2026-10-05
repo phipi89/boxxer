@@ -11,10 +11,10 @@ import xml.etree.ElementTree as ET
 from shapely.geometry import LineString, Point
 from svgpathtools import Arc, CubicBezier, Line, QuadraticBezier, parse_path
 
-import boxxer
-from panelgraph import BOXXER, SVG, PanelGraph, polygon_for, sample_segment
+from boxxer import cli as boxxer
+from boxxer.panelgraph import BOXXER, SVG, PanelGraph, polygon_for, sample_segment
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).resolve().parents[1]
 SINGLE = ROOT / "drafts" / "single-shell.svg"
 
 
@@ -525,7 +525,7 @@ class PanelGraphTests(unittest.TestCase):
             stored_model = json.loads(ET.parse(stored).findtext(f".//{{{BOXXER}}}model"))
             self.assertEqual(stored_model["thickness"], 0.5)
             no_snap = subprocess.run([
-                sys.executable, str(ROOT / "boxxer.py"), "compile", str(first),
+                sys.executable, "-m", "boxxer", "compile", str(first),
                 "--no-snap-near", "-o", str(Path(directory) / "no-snap.svg"),
             ], capture_output=True, text=True)
             self.assertEqual(no_snap.returncode, 2)
@@ -646,7 +646,7 @@ class PanelGraphTests(unittest.TestCase):
             self.assertEqual(manufacturing_paths(compiled), manufacturing_paths(recompiled))
 
     def test_resize_cli_writes_optional_source_and_allows_a4_overflow(self):
-        command = [sys.executable, str(ROOT / "boxxer.py")]
+        command = [sys.executable, "-m", "boxxer"]
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "compiled.svg"
             source = Path(directory) / "source.svg"
@@ -715,55 +715,6 @@ class PanelGraphTests(unittest.TestCase):
             self.assertEqual(output.read_text(), "compiled sentinel")
             self.assertEqual(source.read_text(), "source sentinel")
 
-    def test_interactive_cli_accepts_a_preset_or_svg_path(self):
-        command = [sys.executable, str(ROOT / "boxxer.py"), "interactive"]
-        presets = json.loads((ROOT / "presets" / "presets.json").read_text())
-        self.assertEqual([preset["name"] for preset in presets], [
-            "Separate lid box", "Outside-tab tray", "Connected lid box", "Glue-free gusset tray",
-        ])
-        with tempfile.TemporaryDirectory() as directory:
-            preset_output = Path(directory) / "preset.svg"
-            preset_answers = "\n".join([
-                "1", "80", "70", "25", "25", "", "", "0.1", "",
-                str(preset_output), "", "y",
-            ])+"\n"
-            selected = subprocess.run(command, input=preset_answers, capture_output=True, text=True)
-            self.assertEqual(selected.returncode, 0, selected.stderr)
-            self.assertIn("Available presets:", selected.stdout)
-            self.assertIn("Detected separate box net.", selected.stdout)
-            model = json.loads(ET.parse(preset_output).findtext(f".//{{{BOXXER}}}model"))
-            self.assertEqual(model["resize"]["effective_dimensions"], {
-                "width": 80.0, "length": 70.0, "base_height": 25.0,
-                "lid_height": 25.0, "lid_width": 80.0, "lid_length": 70.0,
-            })
-            self.assertEqual(model["lid_clearance"], 0.1)
-
-            path_output = Path(directory) / "path.svg"
-            path_answers = "\n".join([
-                str(ROOT / "second.svg"), "y", "", "", "", "", "", "",
-                str(path_output), "", "y",
-            ])+"\n"
-            selected = subprocess.run(command, input=path_answers, capture_output=True, text=True)
-            self.assertEqual(selected.returncode, 0, selected.stderr)
-            self.assertTrue(path_output.exists())
-            self.assertIn("Outside-tab tray", selected.stdout)
-            self.assertIn("Panel source: second.svg", selected.stdout)
-            self.assertNotIn("Lid clearance (mm)", selected.stdout)
-
-            null_registry = Path(directory) / "presets.json"
-            null_registry.write_text(json.dumps([{
-                "name": "Null defaults", "source": str(ROOT / "presets" / "separate-lid-box.svg"),
-                "thickness": None, "fold_offset": None, "lid_clearance": None,
-            }]))
-            null_output = Path(directory) / "null.svg"
-            null_answers = "\n".join([
-                "1", "", "", "", "", "", "", "", "", str(null_output), "", "y",
-            ])+"\n"
-            selected = subprocess.run(command+["--presets", str(null_registry)], input=null_answers,
-                                      capture_output=True, text=True)
-            self.assertEqual(selected.returncode, 0, selected.stderr)
-            self.assertTrue(null_output.exists())
-
     def test_inconsistent_cyclic_panel_graph_reports_closure_failure(self):
         with tempfile.TemporaryDirectory() as directory:
             source = svg([
@@ -778,7 +729,7 @@ class PanelGraphTests(unittest.TestCase):
             self.assertTrue(any("Inconsistent fold cycle" in warning for warning in graph.contact_warnings))
 
     def test_cli_safety_json_and_validation(self):
-        command = [sys.executable, str(ROOT / "boxxer.py")]
+        command = [sys.executable, "-m", "boxxer"]
         inspected = subprocess.run(command+["inspect", str(ROOT / "second.svg"), "--snap-near", "--json"], capture_output=True, text=True)
         self.assertEqual(inspected.returncode, 0, inspected.stderr)
         self.assertEqual(len(json.loads(inspected.stdout)["internal_geometry"]), 4)

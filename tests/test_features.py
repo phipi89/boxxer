@@ -5,7 +5,7 @@ import xml.etree.ElementTree as ET
 
 from svgpathtools import Arc, parse_path
 
-from panelgraph import BOXXER, SVG, PanelGraph
+from boxxer.panelgraph import BOXXER, SVG, PanelGraph
 
 
 def graph_from_shapes(shapes):
@@ -111,7 +111,7 @@ class FeatureTests(unittest.TestCase):
         resized.compile(io.BytesIO())
 
     def test_lid_fit_preserves_hole_size_and_anchors_slot_ends(self):
-        source = Path(__file__).parent / "presets" / "separate-lid-box.svg"
+        source = Path(__file__).resolve().parents[1] / "presets" / "separate-lid-box.svg"
         tree = ET.fromstring(PanelGraph(source).source_bytes)
         ET.SubElement(tree, f"{{{SVG}}}circle", id="hole", cx="100", cy="90", r="2")
         ET.SubElement(tree, f"{{{SVG}}}rect", id="slot", x="60", y="70", width="1", height="40", rx="0.5")
