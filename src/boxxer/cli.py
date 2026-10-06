@@ -9,6 +9,7 @@ import tempfile
 import xml.etree.ElementTree as ET
 
 from .panelgraph import DEFAULT_NEAR, PanelGraph
+from .session import ResizeRequest
 
 # Editable checkouts use repository sketches; wheels bundle the same presets.
 PRESET_DIRECTORY = Path(__file__).parent / "presets"
@@ -81,7 +82,8 @@ def resize_and_compile(graph, input_path, output, source_output, resize_options,
         report = resized.compile(compiled_temp, thickness=thickness, fold_offset=fold_offset,
                                  lid_clearance=lid_clearance, finger_cutout=finger_cutout,
                                  finger_cutout_diameter=finger_cutout_diameter,
-                                 finger_cutout_depth=finger_cutout_depth)
+                                 finger_cutout_depth=finger_cutout_depth,
+                                 output_format="dxf" if output.suffix.lower() == ".dxf" else "svg")
         if source_temp is not None:
             source_temp.write_bytes(resized.source_bytes)
         replacements = [(compiled_temp, output)]
@@ -146,15 +148,15 @@ def prompt_yes_no(label, default=True, *, input_fn=input, print_fn=print):
         print_fn("Enter y or n, or q to cancel.")
 
 
-def choose_interactive_source(input_path, directory, *, input_fn=input, print_fn=print):
+def choose_interactive_source(input_path, directory, *, input_fn=input, print_fn=print, ui=None):
     if input_path is not None:
         return Path(input_path), {}
     presets = load_presets(directory)
-    print_fn("Available presets:")
-    for index, preset in enumerate(presets, 1):
-        description = f" - {preset['description']}" if preset.get("description") else ""
-        print_fn(f"  {index}. {preset['name']}{description}")
-    print_fn("Enter a preset number or a path to another SVG.")
+    if not ui:
+        print_fn("Available presets:")
+        for index, preset in enumerate(presets, 1):
+            print_fn(f"  {index}. {preset['name']}")
+        print_fn("Enter a preset number or a path to another SVG.")
     while True:
         selection = prompt_text("Source", input_fn=input_fn)
         if selection.isdigit() and 1 <= int(selection) <= len(presets):
@@ -166,9 +168,9 @@ def choose_interactive_source(input_path, directory, *, input_fn=input, print_fn
         print_fn(f"SVG not found: {source}")
 
 
-def interactive_session(input_path=None, directory=PRESET_DIRECTORY, *, input_fn=input, print_fn=print):
+def interactive_session(input_path=None, directory=PRESET_DIRECTORY, *, input_fn=input, print_fn=print, ui=None):
     print_fn("Boxxer interactive resize")
-    source, preset = choose_interactive_source(input_path, directory, input_fn=input_fn, print_fn=print_fn)
+    source, preset = choose_interactive_source(input_path, directory, input_fn=input_fn, print_fn=print_fn, ui=ui)
     graph = PanelGraph(source)
     if graph.near_seams and not graph.snap_near:
         print_fn(f"Automatically repairing {len(graph.near_seams)} near-coincident seam pair(s).")
@@ -179,8 +181,9 @@ def interactive_session(input_path=None, directory=PRESET_DIRECTORY, *, input_fn
     dimensions = resize_model["dimensions"]
     print_fn(f"Detected {resize_model['kind']} box net.")
     print_fn("Current dimensions: "+", ".join(
-        f"{key.replace('_', ' ')} {value:.3f} mm" for key, value in dimensions.items()))
+        f"{key.replace('_', ' ')} {value:.1f} mm" for key, value in dimensions.items()))
 
+    dimensions = {key: round(value, 1) for key, value in dimensions.items()}
     resize_options = {
         "width": prompt_float("Width (mm)", dimensions["width"], minimum=1.0000001,
                               input_fn=input_fn, print_fn=print_fn),
@@ -244,25 +247,41 @@ def interactive_session(input_path=None, directory=PRESET_DIRECTORY, *, input_fn
             input_fn=input_fn, print_fn=print_fn):
         raise InteractiveCancelled
 
-    print_fn("\nResize summary:")
-    for key, value in resize_options.items():
-        print_fn(f"  {key.replace('_', ' ').title()}: {value:g} mm")
-    print_fn(f"  Material thickness: {thickness:g} mm")
-    print_fn(f"  Fold offset: {fold_offset:g} mm")
-    print_fn(f"  Finger cutout: {finger_cutout}")
-    if resize_model["kind"] != "single":
-        print_fn(f"  Lid clearance: {lid_clearance:g} mm")
-    print_fn(f"  Compiled output: {output}")
-    if source_output is not None:
-        print_fn(f"  Editable source: {source_output}")
+    request = ResizeRequest(source, output, source_output, resize_options, thickness, fold_offset,
+                            lid_clearance, finger_cutout, cutout_diameter, cutout_depth, graph.near, graph.snap_near)
+    if ui:
+        ui.summary(request)
+    else:
+        print_fn("\nResize summary:")
+        for key, value in request.summary():
+            print_fn(f"  {key}: {value}")
     if not prompt_yes_no("Create these files", input_fn=input_fn, print_fn=print_fn):
         raise InteractiveCancelled
-    report = resize_and_compile(
-        graph, source, output, source_output, resize_options,
-        thickness=thickness, fold_offset=fold_offset, lid_clearance=lid_clearance,
-        finger_cutout=finger_cutout, finger_cutout_diameter=cutout_diameter, finger_cutout_depth=cutout_depth)
-    print_report(report)
+    report = request.execute(graph)
+    report["equivalent_command"] = request.command()
+    if ui:
+        ui.results(report)
+    else:
+        print_report(report)
+    if ui:
+        ui.command(report["equivalent_command"])
+    else:
+        print_fn("\nEquivalent command:")
+        print_fn(report["equivalent_command"])
     return report
+
+
+def terminal_session(input_path, directory):
+    from .tui import Navigate, TerminalWizard
+    ui = TerminalWizard(load_presets(directory) if input_path is None else [])
+    while True:
+        try:
+            return interactive_session(input_path, directory, input_fn=ui.input, print_fn=ui.print, ui=ui)
+        except Navigate as navigation:
+            ui.navigate(navigation.target)
+        except (ValueError, OSError, ET.ParseError) as error:
+            if not ui.retry(error):
+                raise InteractiveCancelled from error
 
 
 def print_report(report):
@@ -362,7 +381,8 @@ def main():
         command.add_argument("--lid-clearance", type=float,
                              help="Additional per-side clearance for an inferred outer lid in mm")
         if name in ("compile", "resize"):
-            command.add_argument("--output", "-o", type=Path, required=True)
+            command.add_argument("--output", "-o", type=Path, required=True,
+                                 help="Compiled SVG or DXF output (.dxf selects coloured millimetre DXF)")
             command.add_argument("--finger-cutout", nargs="?", const="one", choices=("none", "one", "opposing"),
                                  help="Add a finger opening on the top free flap, or on two opposing flaps")
             command.add_argument("--finger-cutout-diameter", type=float,
@@ -383,10 +403,13 @@ def main():
                              help="SVG to resize; omit to choose a preset or enter a path")
     interactive.add_argument("--presets", type=Path, default=PRESET_DIRECTORY,
                              help="Directory of SVG sketches to list as presets")
+    interactive.add_argument("--plain", action="store_true", help="Use plain text prompts instead of keyboard menus")
     args = parser.parse_args()
     try:
         if args.command == "interactive":
-            report = interactive_session(args.input, args.presets)
+            report = (terminal_session(args.input, args.presets)
+                      if not args.plain and sys.stdin.isatty() and sys.stdout.isatty()
+                      else interactive_session(args.input, args.presets))
             return 1 if report["warnings"] else 0
         if args.command == "compile" and paths_alias(args.output, args.input):
             raise ValueError("Input and output paths must differ")
@@ -401,14 +424,15 @@ def main():
             report = graph.report(thickness, fold_offset, lid_clearance)
         else:
             if args.command == "resize":
-                report = resize_and_compile(
-                    graph, args.input, args.output, args.source_output,
+                request = ResizeRequest(
+                    args.input, args.output, args.source_output,
                     {"width": args.width, "length": args.length, "height": args.height,
                      "base_height": args.base_height, "lid_height": args.lid_height,
                      "connector_depth": args.connector_depth},
                     thickness=thickness, fold_offset=fold_offset, lid_clearance=lid_clearance,
                     finger_cutout=args.finger_cutout, finger_cutout_diameter=args.finger_cutout_diameter,
-                    finger_cutout_depth=args.finger_cutout_depth)
+                    finger_cutout_depth=args.finger_cutout_depth, near=graph.near, snap_near=graph.snap_near)
+                report = request.execute(graph)
             else:
                 report = graph.compile(args.output, thickness=thickness, fold_offset=fold_offset,
                                        lid_clearance=lid_clearance, finger_cutout=args.finger_cutout,

@@ -1966,7 +1966,11 @@ class PanelGraph:
         raise ValueError("Compensated exterior cut contour contains too many self-intersections")
 
     def compile(self, output, *, thickness=None, fold_offset=None, lid_clearance=None,
-                finger_cutout=None, finger_cutout_diameter=None, finger_cutout_depth=None):
+                finger_cutout=None, finger_cutout_diameter=None, finger_cutout_depth=None, output_format=None):
+        if output_format is None:
+            output_format = "dxf" if isinstance(output, (str, FilePath)) and FilePath(output).suffix.lower() == ".dxf" else "svg"
+        if output_format not in ("svg", "dxf"):
+            raise ValueError("Output format must be svg or dxf")
         finger_config = finger_settings(self.finger_cutout_settings, mode=finger_cutout,
                                         diameter=finger_cutout_diameter, depth=finger_cutout_depth)
         if self.input_is_compiled:
@@ -1994,7 +1998,7 @@ class PanelGraph:
             return adjusted.compile(output, thickness=thickness, fold_offset=fold_offset,
                                     lid_clearance=lid_clearance, finger_cutout=finger_config["mode"],
                                     finger_cutout_diameter=finger_config["diameter"],
-                                    finger_cutout_depth=finger_config["depth"])
+                                    finger_cutout_depth=finger_config["depth"], output_format=output_format)
         fragments, seam_curves, internals, reliefs, corner_reliefs, compensation, lid_fit = self._compensated_geometry(
             thickness, fold_offset, lid_clearance)
         contour_data = [self._untangle_contour(contour, treatments)
@@ -2158,11 +2162,22 @@ class PanelGraph:
                                f"{{{BOXXER}}}score-side": "front" if seam.angle > 0 else "back"})
         if defs is not None:
             root.insert(0, defs)
-        ET.ElementTree(root).write(output, encoding="utf-8", xml_declaration=True)
+        if output_format == "dxf":
+            from .dxf import write_dxf
+            # Render internal paths in their final translated coordinates.
+            operations = [("CUT", path) for path in contours]
+            operations.extend(("CUT", rounded_path(path, shape.corner_treatments)) for _, shape, path in internals)
+            operations.extend(("CUT", path) for path in reliefs+corner_reliefs)
+            operations.extend(("SCORE_FRONT" if seam.angle > 0 else "SCORE_BACK", Path(seam_curves[seam.id]))
+                              for seam in self.seams)
+            write_dxf(output, operations, self.page)
+        else:
+            ET.ElementTree(root).write(output, encoding="utf-8", xml_declaration=True)
         return {**base_report, "folds": output_folds, "compensation": compensation_metadata,
                 "finger_cutout": finger_config, "finger_cutouts": finger_cutouts,
                 "flap_shortening": self.flap_adjustments,
                 "output": str(output), "cut_contours": len(contours),
+                "output_format": output_format,
                 "internal_cuts": sum(len(p.internal) for p in self.panels),
                 "tab_relief_cuts": len(reliefs), "corner_relief_cuts": len(corner_reliefs),
                  "relief_cuts": len(reliefs)+len(corner_reliefs),

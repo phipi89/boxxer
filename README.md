@@ -13,9 +13,12 @@ uv sync
 uv run boxxer interactive
 ```
 
-The wizard lets you choose a sketch, set dimensions and paper thickness, and
-optionally add finger cutouts. It writes a compiled SVG ready to open in your
-plotter software.
+The keyboard-driven wizard lets you choose a sketch, set dimensions and paper thickness, and
+optionally add finger cutouts. It writes a compiled SVG or DXF ready to open in your
+plotter software and shows the equivalent CLI command so you can repeat it later.
+Use `--plain` for simple text prompts; piped input selects them automatically.
+Enter accepts faint defaults; typing replaces them. Shift+Tab goes back, and the
+final review lets you edit a setting before generating.
 
 For the command line:
 
@@ -27,6 +30,11 @@ uv run boxxer compile presets/gluefree.svg --snap-near \
 Draw adjoining panels with shared edges for folds. Boxxer also supports signed
 folds, mirror and rotational symmetry, and editable rounded corners. Output has
 black cuts, red front-side scores, and blue dashed backside scores.
+
+For Silhouette Studio Basic, use an output filename ending in **`.dxf`**. DXF
+uses millimetres and separate black/red/blue cut and score layers. In Studio,
+import at original size (not “Fit to Page”) and use **Send → Line** to assign
+operations by colour. DXF score geometry is continuous, including backside scores.
 
 See **[the design guide](docs/design.md)** for drawing conventions, all options,
 geometry details, and current limits. Run `uv run boxxer --help` for commands.

@@ -22,6 +22,9 @@ the presets, so the interactive menu also works outside a source checkout.
 ### Code responsibilities
 
 - `cli.py`: arguments, interactive prompts, reporting, and atomic output handling.
+- `session.py`: shared resize requests and shell-quoted replay commands.
+- `tui.py`: Questionary keyboard prompts and Rich review/results panels.
+- `dxf.py`: millimetre DXF manufacturing paths with coloured operation layers.
 - `panelgraph.py`: SVG import, panel/seam topology, shell inference, resizing,
   fitting, compensation, and SVG compilation.
 - `corners.py`: editable Inkscape fillet effects and physical radii.
@@ -172,6 +175,49 @@ angles and native curved boundaries; slots retain their feature rules.
 uv run boxxer compile presets/gluefree.svg --snap-near \
   --thickness 0.4 --fold-offset 0 --output compiled/gluefree-compiled.svg
 ```
+
+## DXF output for Silhouette Studio
+
+An output filename ending in `.dxf` (case-insensitive) selects direct DXF export
+for `compile`, `resize`, and interactive mode. All manufacturing
+geometry uses the same resizing, compensation, corner rendering, and cutout
+pipeline as SVG output. No intermediate Inkscape conversion is required.
+
+```sh
+uv run boxxer compile presets/gluefree_rot.svg --snap-near \
+  --thickness 0.4 --finger-cutout opposing --output box.dxf
+```
+
+The exporter writes an AutoCAD R2000 ASCII DXF with `$INSUNITS=4` (millimetres)
+and metric measurement settings. Coordinates remain in physical millimetres;
+SVG page-down Y is converted to CAD page-up Y using the document height.
+
+| Operation | Layer | Explicit indexed colour |
+| --- | --- | --- |
+| Exterior cuts, holes, and relief cuts | `CUT` | 7: black/white (black on a white background) |
+| Front-side scores | `SCORE_FRONT` | 1: red |
+| Backside scores | `SCORE_BACK` | 5: blue |
+
+Colour is assigned on each entity as well as its layer. Entities use continuous
+linetypes: a dashed SVG score remains one continuous score, not a collection of
+short segments. Closed contours and holes are closed lightweight polylines;
+open scores and relief cuts remain open. All curves, including circular arcs,
+rounded corners, finger cutouts, elliptical arcs, and Bezier curves, are flattened
+with a maximum chord error of 0.01 mm. DXF contains straight polyline segments
+only, with no arc bulges: Studio was observed to misplace an opposing cutout
+when importing otherwise valid curved polylines. SVG output retains its native
+curves. This compatibility export avoids relying on Studio's arc interpretation.
+
+Use Studio's original-size / “As Is” DXF import setting rather than “Fit to Page”.
+The colours can be assigned separate settings in **Send → Line**, if preserved
+by your Studio version. Selecting an operation colour does not automatically
+flip the sheet or configure tool pressure: backside scoring is a separate pass.
+
+DXF is manufacturing output only. It does not retain editable Inkscape effects
+or Boxxer's embedded-source metadata, and cannot be used as Boxxer input. Keep
+the original SVG or request `--source-output editable.svg` when resizing. For
+programmatic file-like output, use a text stream and `output_format="dxf"`;
+SVG continues to use binary streams by default.
 
 ## Generated finger cutouts
 
@@ -415,8 +461,29 @@ uv run boxxer interactive
 
 The wizard lists SVG files in the preset folder, automatically repairs reported
 near-coincident seams, shows the inferred dimensions, and prompts
-for target dimensions, material settings, and output paths. Press Enter to retain
-the displayed value, or enter `q` to cancel.
+for target dimensions, material settings, and output paths. In a terminal,
+Questionary provides arrow-key menus and path completion; Rich displays compact
+review and result panels. Numeric values are validated as they are entered.
+Keyboard hints appear faintly in a right-aligned bottom toolbar, separate from
+the field label and input.
+Defaults are faint placeholders in empty text fields: Enter accepts the default,
+while typing replaces it instead of appending to it. Detected dimension defaults
+are rounded to 0.1 mm; explicit entered values retain their precision. This only
+rounds the wizard's suggested targets, not imported sketch geometry.
+
+Shift+Tab returns to the previous setting. Numeric fields also accept Tab to
+advance; path fields keep Tab for path completion. Accepted values are preserved
+and become placeholders when revisiting a field. At review, choose **Generate**,
+**Edit settings** (then select a field), or **Cancel**. Changing the source sketch
+clears prior settings so its geometry supplies fresh defaults. The equivalent
+command reflects the final edited values.
+
+Press Ctrl-C to cancel. If generation fails, choose
+to edit and try again; previously entered field values are retained.
+
+Use `uv run boxxer interactive --plain` for the simple text interface (Enter
+retains defaults; `q` cancels). Non-TTY input or output automatically selects
+plain prompts, preserving scripted workflows.
 
 Instead of selecting a preset, enter any SVG path at the source prompt. A path can
 also be supplied directly:
@@ -432,6 +499,15 @@ updates the menu automatically; nested folders and non-SVG files are ignored.
 Manufacturing defaults are thickness 0.5 mm, fold offset 0, and lid clearance 0;
 compiled SVGs reuse their stored settings. Interactive output uses the same validation,
 hard-link protection, and atomic writes as the regular `resize` command.
+
+After successful generation, both interfaces print an **equivalent command**.
+It includes the source, target dimensions, near-edge tolerance and repair mode,
+material settings, effective finger-cutout mode/diameter/depth, and both output
+paths when requested. Paths are shell-quoted for POSIX shells, including spaces
+and apostrophes. The command uses the same `ResizeRequest` execution path as the
+wizard and regular CLI resize command. Copy it to reproduce the same output
+from the same input; replaying it replaces the specified outputs just like a
+normal CLI resize.
 
 ## Thickness compensation
 
