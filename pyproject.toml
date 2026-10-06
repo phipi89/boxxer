@@ -27,5 +27,5 @@ packages = ["src/boxxer"]
 "presets" = "boxxer/presets"
 
 [tool.hatch.build.targets.sdist]
-include = ["src/", "presets/", "tests/", "docs/", "README.md", "pyproject.toml", "uv.lock",
+include = ["src/", "presets/", "tests/", "scripts/", "docs/", "README.md", "pyproject.toml", "uv.lock",
            "rotational.svg", "second.svg", "drafts/", "examples/"]

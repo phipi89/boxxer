@@ -4,6 +4,12 @@ Turn SVG box sketches into cut and score paths for a plotter. Draw separate
 panels in Inkscape, or start with a preset; Boxxer finds the folds, resizes the
 box, and accounts for material thickness.
 
+![A one-corner rotational sketch becomes a complete tray with cut paths, front and back scores, slots, and finger cutouts.](docs/assets/sketch-to-compiled.png)
+
+**Pinwheel tray:** [editable sketch](presets/gluefree_rot.svg) →
+[compiled SVG](examples/pinwheel-tray.svg). One corner and a 90° repeat marker
+produce the complete net, with thickness allowance and two finger cutouts.
+
 ## Get started
 
 You need Python 3.11+ and [uv](https://docs.astral.sh/uv/).
@@ -23,8 +29,8 @@ final review lets you edit a setting before generating.
 For the command line:
 
 ```sh
-uv run boxxer compile presets/gluefree.svg --snap-near \
-  --thickness 0.4 --finger-cutout --output box.svg
+uv run boxxer compile presets/gluefree_rot.svg --snap-near \
+  --thickness 0.4 --finger-cutout opposing --output box.svg
 ```
 
 Draw adjoining panels with shared edges for folds. Boxxer also supports signed

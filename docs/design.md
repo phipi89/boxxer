@@ -647,6 +647,21 @@ or turning each new drawing into a dedicated algorithm regression.
 Run a specific module with `uv run python -m unittest tests.test_symmetry -v`.
 Build an installable wheel with `uv build --wheel`.
 
+## README illustration
+
+The sketch-to-compiled illustration is generated from the actual rotational
+sketch and manufacturing pipeline, rather than hand-drawn paths. Regenerate
+the compiled example and preview SVG with:
+
+```sh
+uv run python scripts/render_example.py
+inkscape docs/assets/sketch-to-compiled.svg --export-type=png \
+  --export-filename=docs/assets/sketch-to-compiled.png --export-width=1600
+```
+
+The illustration's heavier display strokes do not change the manufacturing SVG
+in `examples/pinwheel-tray.svg`.
+
 ## Further cleanup
 
 The next useful refactor is to split `panelgraph.py` along its pipeline stages:
