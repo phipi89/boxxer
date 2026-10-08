@@ -172,7 +172,7 @@ class FoldSketchTests(unittest.TestCase):
         g.compile(io.BytesIO(), thickness=.4)
 
     def test_actual_inkscape_gluefree_sketch(self):
-        source = FilePath(__file__).resolve().parents[1]/"presets"/"gluefree.svg"
+        source = FilePath(__file__).resolve().parents[1]/"presets"/"tray_mirrored_self-locking.svg"
         g = PanelGraph(source, snap_near=True)
         self.assertEqual(len(g.panels), 13)
         self.assertEqual(len(g.seams), 16)

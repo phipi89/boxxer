@@ -1,4 +1,4 @@
-"""Anchored internal-cut geometry, independent of panel names and page axes."""
+"""Rigid boundary features, fractional cuts, and matched slit rendering."""
 import numpy as np
 from svgpathtools import Arc, Line, Path
 from svgpathtools.path import transform as transform_path
@@ -52,8 +52,8 @@ def boundary_cutouts(path, *, counterclockwise):
 def _slot_frame(path, tolerance):
     """Recognise a non-square rectangle or circular-ended rounded rectangle.
 
-    Unclassified cuts remain rigid. An explicit ``fixed`` feature overrides this
-    inference, so an elongated decorative opening need not behave as a slot.
+    This determines how an already matched opening can be rendered; shape alone
+    never establishes a mechanical receiving-slot relationship.
     """
     lines = [segment for segment in path if isinstance(segment, Line)]
     if not lines or any(not isinstance(segment, (Line, Arc)) for segment in path):
@@ -98,51 +98,20 @@ def _slot_frame(path, tolerance):
 
 
 def map_internal(path, panel_path, mapped_panel_path, mapper, *, policy, tolerance):
-    """Keep slot end insets and width, or translate a fixed cut rigidly.
+    """Unmatched internal cuts retain size and follow the panel fractionally."""
+    x0, x1, y0, y1 = path.bbox()
+    anchor = complex((x0+x1)/2, (y0+y1)/2)
+    return transform_path(path, _frame(1+0j, mapper(anchor)-anchor))
 
-    End anchors belong to the owning panel. Their fractional position along each
-    transverse edge fixes the slot's lateral position as that panel changes.
-    Both panel paths must retain the same segment correspondence.
-    """
-    slot = None if policy == "fixed" else _slot_frame(path, tolerance)
-    if slot is None:
-        if policy == "slot":
-            raise ValueError("Explicit slot must be a rectangular or circular-ended elongated cut")
-        x0, x1, y0, y1 = path.bbox()
-        anchor = complex((x0+x1)/2, (y0+y1)/2)
-        return transform_path(path, _frame(1+0j, mapper(anchor)-anchor))
 
-    axis, local, (x0, x1, y0, y1) = slot
-    lateral = (y0+y1)/2
-    candidates = [[], []]
-    for index, segment in enumerate(panel_path):
-        if not isinstance(segment, Line):
-            continue
-        start, end = segment.start/axis, segment.end/axis
-        if abs(end.real-start.real) > tolerance or abs(end.imag-start.imag) <= tolerance:
-            continue
-        fraction = (lateral-start.imag)/(end.imag-start.imag)
-        if not 0 <= fraction <= 1:
-            continue
-        coordinate = (start+(end-start)*fraction).real
-        mapped = mapped_panel_path[index].point(fraction)
-        if coordinate < x0:
-            candidates[0].append((coordinate, mapped))
-        if coordinate > x1:
-            candidates[1].append((coordinate, mapped))
-    if not all(candidates):
-        raise ValueError("Slot ends require transverse edges on their owning panel; use boxxer:feature='fixed' for a rigid cut")
-    left, mapped_left = max(candidates[0], key=lambda item: item[0])
-    right, mapped_right = min(candidates[1], key=lambda item: item[0])
-    vector = mapped_right-mapped_left
-    span = abs(vector)
-    start_inset, end_inset = x0-left, right-x1
-    length = span-start_inset-end_inset
-    width = y1-y0
+def stretch_slot(slot, new_axis, new_start, new_end, lateral, tolerance):
+    """Render an already matched opening, preserving width and end profiles."""
+    _, local, (x0, x1, y0, y1) = slot
+    length, width = new_end-new_start, y1-y0
     if length <= width+tolerance:
         raise ValueError("Resized slot is too short to retain its width, end profile, and edge insets")
-    new_axis = vector/span
-    start = mapped_left+new_axis*start_inset
+    start = new_axis*complex(new_start, lateral)
+    old_lateral = (y0+y1)/2
 
     def mapped(point):
         # End profiles move rigidly; only the straight longitudinal sides grow.
@@ -153,7 +122,7 @@ def map_internal(path, panel_path, mapped_panel_path, mapper, *, policy, toleran
             x = length-(x1-point.real)
         else:
             x = width/2+(along-width/2)*(length-width)/(x1-x0-width)
-        return complex(x, point.imag-lateral)
+        return complex(x, point.imag-old_lateral)
 
     segments = []
     for segment in local:
@@ -161,6 +130,6 @@ def map_internal(path, panel_path, mapped_panel_path, mapper, *, policy, toleran
             segments.append(Line(mapped(segment.start), mapped(segment.end)))
         else:
             a, b, _, _ = segment.bbox()
-            shift = complex(-x0 if b <= x0+width/2+tolerance else length-x1, -lateral)
+            shift = complex(-x0 if b <= x0+width/2+tolerance else length-x1, -old_lateral)
             segments.append(transform_path(Path(segment), _frame(1+0j, shift))[0])
     return transform_path(Path(*segments), _frame(new_axis, start))

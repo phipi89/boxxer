@@ -1,5 +1,4 @@
 import io
-from pathlib import Path
 import unittest
 import xml.etree.ElementTree as ET
 
@@ -24,7 +23,7 @@ def tray_shapes(height=10):
 
 
 class FeatureTests(unittest.TestCase):
-    def test_slot_keeps_width_caps_and_end_insets(self):
+    def test_unmatched_elongated_cut_keeps_size_and_fractional_position(self):
         for rounded in (False, True):
             with self.subTest(rounded=rounded):
                 attributes = {"id": "slot", "x": "60", "y": "42", "width": "1", "height": "6"}
@@ -36,9 +35,9 @@ class FeatureTests(unittest.TestCase):
                 slot = wall.internal[0]
                 x0, x1, y0, y1 = slot.path.bbox()
                 self.assertAlmostEqual(x1-x0, 1)
-                self.assertAlmostEqual(y1-y0, 16)
-                self.assertAlmostEqual(y0-wall.path.bbox()[2], 2)
-                self.assertAlmostEqual(wall.path.bbox()[3]-y1, 2)
+                self.assertAlmostEqual(y1-y0, 6)
+                self.assertAlmostEqual(y0-wall.path.bbox()[2], 7)
+                self.assertAlmostEqual(wall.path.bbox()[3]-y1, 7)
                 self.assertAlmostEqual((x0+x1)/2, 55.75)
                 if rounded:
                     self.assertTrue(all(abs(segment.radius.real-0.5) < 1e-8
@@ -49,10 +48,10 @@ class FeatureTests(unittest.TestCase):
                 restored_slot = next(shape for panel in restored.panels for shape in panel.internal)
                 for before, after in zip(original_slot.path.bbox(), restored_slot.path.bbox()):
                     self.assertAlmostEqual(before, after)
-                with self.assertRaisesRegex(ValueError, "slot is too short"):
+                with self.assertRaises(ValueError):
                     graph.resized(height=4)
 
-    def test_slot_anchors_follow_rotated_and_reversed_panel_paths(self):
+    def test_unmatched_cut_position_follows_rotated_and_reversed_panel_paths(self):
         shapes = tray_shapes()+[("rect", {"id": "slot", "x": "60", "y": "42",
                                          "width": "1", "height": "6", "rx": "0.5"})]
         source = graph_from_shapes(shapes)
@@ -68,7 +67,7 @@ class FeatureTests(unittest.TestCase):
                 slot = next(shape for panel in resized.panels for shape in panel.internal)
                 x0, x1, y0, y1 = slot.path.bbox()
                 self.assertAlmostEqual(min(x1-x0, y1-y0), 1)
-                self.assertAlmostEqual(max(x1-x0, y1-y0), 16)
+                self.assertAlmostEqual(max(x1-x0, y1-y0), 6)
 
     def test_fixed_override_survives_source_and_compiled_round_trip(self):
         graph = graph_from_shapes(tray_shapes()+[("rect", {
@@ -110,9 +109,9 @@ class FeatureTests(unittest.TestCase):
         self.assertAlmostEqual((notch_floor.start.imag+notch_floor.end.imag)/2, 72)
         resized.compile(io.BytesIO())
 
-    def test_lid_fit_preserves_hole_size_and_anchors_slot_ends(self):
-        source = Path(__file__).resolve().parents[1] / "presets" / "separate-lid-box.svg"
-        tree = ET.fromstring(PanelGraph(source).source_bytes)
+    def test_lid_fit_preserves_unmatched_internal_cut_sizes(self):
+        from tests.test_fingercuts import enclosure
+        tree = ET.fromstring(enclosure(connected=False))
         ET.SubElement(tree, f"{{{SVG}}}circle", id="hole", cx="100", cy="90", r="2")
         ET.SubElement(tree, f"{{{SVG}}}rect", id="slot", x="60", y="70", width="1", height="40", rx="0.5")
         graph = PanelGraph("lid.svg", _source_bytes=ET.tostring(tree))
@@ -124,7 +123,7 @@ class FeatureTests(unittest.TestCase):
         self.assertAlmostEqual(hole.bbox()[1]-hole.bbox()[0], 4)
         self.assertAlmostEqual(hole.bbox()[3]-hole.bbox()[2], 4)
         self.assertAlmostEqual(slot.bbox()[1]-slot.bbox()[0], 1)
-        self.assertAlmostEqual(slot.bbox()[3]-slot.bbox()[2], 42)
+        self.assertAlmostEqual(slot.bbox()[3]-slot.bbox()[2], 40)
         recompiled = io.BytesIO()
         PanelGraph("compiled.svg", _source_bytes=output.getvalue()).compile(recompiled)
         self.assertEqual(output.getvalue(), recompiled.getvalue())

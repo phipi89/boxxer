@@ -6,7 +6,7 @@ box, and accounts for material thickness.
 
 ![A one-corner rotational sketch becomes a complete tray with cut paths, front and back scores, slots, and finger cutouts.](docs/assets/sketch-to-compiled.png)
 
-**Pinwheel tray:** [editable sketch](presets/gluefree_rot.svg) →
+**Pinwheel tray:** [editable sketch](presets/tray_gusset_self-locking_pinwheel.svg) →
 [compiled SVG](examples/pinwheel-tray.svg). One corner and a 90° repeat marker
 produce the complete net, with thickness allowance and two finger cutouts.
 
@@ -29,7 +29,7 @@ final review lets you edit a setting before generating.
 For the command line:
 
 ```sh
-uv run boxxer compile presets/gluefree_rot.svg --snap-near \
+uv run boxxer compile presets/tray_gusset_self-locking_pinwheel.svg --snap-near \
   --thickness 0.4 --finger-cutout opposing --output box.svg
 ```
 
@@ -41,6 +41,13 @@ For Silhouette Studio Basic, use an output filename ending in **`.dxf`**. DXF
 uses millimetres and separate black/red/blue cut and score layers. In Studio,
 import at original size (not “Fit to Page”) and use **Send → Line** to assign
 operations by colour. DXF score geometry is continuous, including backside scores.
+
+To turn an editable draft into a reusable preset, repair its shared edges and
+embed technical metadata:
+
+```sh
+uv run boxxer prepare draft.svg --output presets/tray_gusset_self-locking_pinwheel.svg
+```
 
 See **[the design guide](docs/design.md)** for drawing conventions, all options,
 geometry details, and current limits. Run `uv run boxxer --help` for commands.

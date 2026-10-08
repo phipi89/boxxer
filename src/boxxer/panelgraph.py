@@ -28,6 +28,8 @@ from .flaps import shortening_plan
 from .foldguides import attach_guides, expand_symmetry, guide_for, rotation_guide_for
 from .foldstack import shifted_scores, stack_plan
 from .fingercuts import apply_cutouts, settings as finger_settings
+from .presetmeta import read_metadata
+from .interactions import exposed_references, find_interactions, folded_transforms, map_opening, projected_engagement
 
 SVG = "http://www.w3.org/2000/svg"
 BOXXER = "https://boxxer.local/ns/1"
@@ -256,12 +258,13 @@ def transform_point(point: complex, transform):
     return complex(value[0], value[1])
 
 
-def affine_between_segments(start, end, new_start, new_end):
+def affine_between_segments(start, end, new_start, new_end, normal_scale=1.0):
     vector = end-start
     mapped = new_end-new_start
     normal = complex(-vector.imag, vector.real)
     source = np.array([[vector.real, normal.real], [vector.imag, normal.imag]])
-    target = np.array([[mapped.real, normal.real], [mapped.imag, normal.imag]])
+    mapped_normal = complex(-mapped.imag, mapped.real)*abs(vector)/abs(mapped)*normal_scale
+    target = np.array([[mapped.real, mapped_normal.real], [mapped.imag, mapped_normal.imag]])
     linear = target@np.linalg.inv(source)
     result = np.eye(3)
     result[:2, :2] = linear
@@ -361,6 +364,15 @@ class PanelGraph:
             root = outer_root
             self.source_bytes = input_bytes
             self.source_name = _source_name or self.filename.name
+        self.preset_metadata = read_metadata(root)
+        self.preset_defaults = (dict(self.preset_metadata.get("defaults", {}))
+                                if self.preset_metadata and self.preset_metadata["status"] == "ready" else {})
+        if any(key not in ("thickness", "fold_offset", "lid_clearance") or isinstance(value, bool) or
+               not isinstance(value, (int, float)) or not math.isfinite(value)
+               for key, value in self.preset_defaults.items()):
+            raise ValueError("Preset defaults must be finite material settings")
+        if any(self.preset_defaults.get(key, 0) < 0 for key in ("thickness", "lid_clearance")):
+            raise ValueError("Preset thickness and lid clearance must be nonnegative")
         self.resize_metadata = self.compiled_settings.get("resize")
         self.finger_cutout_settings = finger_settings(self.compiled_settings.get("finger_cutout"))
         self.flap_adjustments = (self.resize_metadata.get("flap_shortening", [])
@@ -377,7 +389,9 @@ class PanelGraph:
             raise ValueError("Compiled SVG thickness must be nonnegative")
         if self.compiled_settings.get("lid_clearance", 0) < 0:
             raise ValueError("Compiled SVG lid_clearance must be nonnegative")
-        stored_near = stored_options.get("near_distance", DEFAULT_NEAR)
+        preset_near = (self.preset_metadata.get("near_distance", DEFAULT_NEAR)
+                       if self.preset_metadata and self.preset_metadata["status"] == "ready" else DEFAULT_NEAR)
+        stored_near = stored_options.get("near_distance", preset_near)
         stored_snap = stored_options.get("snap_near", False)
         if (isinstance(stored_near, bool) or not isinstance(stored_near, (int, float)) or
                 not math.isfinite(stored_near) or stored_near <= 0):
@@ -391,6 +405,8 @@ class PanelGraph:
         self.near = near
         self.snap_near = bool(snap_near)
         self.page = (length_mm(root.get("width", "210mm")), length_mm(root.get("height", "297mm")))
+        self.source_root = root
+        self.source_elements = {}
         viewbox = numbers(root.get("viewBox", f"0 0 {self.page[0]} {self.page[1]}"))
         if len(viewbox) != 4 or min(viewbox[2:]) <= 0:
             raise ValueError("Invalid SVG viewBox")
@@ -423,10 +439,12 @@ class PanelGraph:
                 path = Path(*(segment for segment in path if abs(segment.end-segment.start) > NUMERIC_EPS))
                 rotation = rotation_guide_for(path, current_style, element.get("id", f"rotation-{len(rotations)}"))
                 if rotation is not None:
+                    self.source_elements[rotation.id] = (element, current_matrix)
                     rotations.append(rotation)
                     return
                 guide = guide_for(path, current_style, element.get("id", f"guide-{len(guides)}"))
                 if guide is not None:
+                    self.source_elements[guide.id] = (element, current_matrix)
                     guides.append(guide)
                     return
                 if not path or abs(path[0].start-path[-1].end) > NUMERIC_EPS:
@@ -439,12 +457,19 @@ class PanelGraph:
                                     outside_fill(current_style), len(shapes), feature,
                                     corner_lpe[1] if corner_lpe else {})
                 shapes.append(shape)
+                self.source_elements[shape.id] = (element, current_matrix)
             for child in element:
                 visit(child, current_matrix, current_style, opacity)
 
         visit(root, page_matrix, {})
+        self.seed_shapes = list(shapes)
+        self.seed_guides = list(guides)
+        self.seed_rotations = list(rotations)
+        self.symmetry_provenance = {}
+        self.symmetry_duplicates = []
         shapes, self.fold_guides, self.mirror_axes = expand_symmetry(
-            shapes, guides, polygon_for, self.near, rotations)
+            shapes, guides, polygon_for, self.near, rotations,
+            provenance=self.symmetry_provenance, duplicates=self.symmetry_duplicates)
         self.rotational_symmetry = ([{"center": [rotations[0].center.real, rotations[0].center.imag],
                                      "order": rotations[0].order}] if rotations else [])
         if not shapes:
@@ -475,6 +500,7 @@ class PanelGraph:
         self.components = self._components()
         self.structure = self._infer_structure()
         self.contacts, self.contact_warnings, self.contact_diagnostics = self._infer_contacts()
+        self.opening_interactions, self.interaction_warnings = find_interactions(self)
 
     def _detect_seams(self):
         seam_index = 0
@@ -620,6 +646,35 @@ class PanelGraph:
         adjacency = self._adjacency()
 
         def principal_candidates(component):
+            structural = []
+            for panel_id in component:
+                panel = by_id[panel_id]
+                neighbors = adjacency[panel_id]
+                if len(panel.path) != 4 or len(neighbors) < 3 or any(not isinstance(edge, Line) for edge in panel.path):
+                    continue
+                vectors = [edge.end-edge.start for edge in panel.path]
+                if any(abs((first.conjugate()*second).real)/(abs(first)*abs(second)) > 1e-7
+                       for first, second in zip(vectors, vectors[1:]+vectors[:1])):
+                    continue
+                indices, heights = [], []
+                for neighbor, seam in neighbors:
+                    index = seam.segment_a if seam.panel_a == panel_id else seam.segment_b
+                    if (not isinstance(seam.curve, Line) or abs(seam.angle) != 90 or
+                            abs(seam.length-panel.path[index].length()) > self.near):
+                        break
+                    indices.append(index)
+                    vector = seam.end-seam.start
+                    heights.append(max(abs(((complex(x, y)-seam.start)*vector.conjugate()).imag)/abs(vector)
+                                       for x, y in by_id[neighbor].polygon.exterior.coords))
+                else:
+                    if len(set(indices)) == len(neighbors) and any(
+                            sum(abs(height-other) <= self.near for other in heights) >= 3 for height in heights):
+                        structural.append((len(indices), panel_id))
+            if len(structural) == 2:
+                return sorted(panel_id for _, panel_id in structural)
+            if structural:
+                strongest = max(count for count, _ in structural)
+                return sorted(panel_id for count, panel_id in structural if count == strongest)
             largest = max(by_id[panel_id].polygon.area for panel_id in component)
             tolerance = max(self.near*self.near, largest*1e-6)
             return [panel_id for panel_id in component if len(adjacency[panel_id]) >= 3 and
@@ -907,10 +962,15 @@ class PanelGraph:
         target_contacts = {(row.tab, row.receiver, row.placement) for row in adjusted.contacts}
         if source_pairs != target_pairs or source_contacts != target_contacts or adjusted.contact_warnings:
             raise ValueError("Flap shortening changes fold topology or tab contacts")
+        for identifier, binding in self.opening_interactions.items():
+            target = adjusted.opening_interactions.get(identifier)
+            if target is None or target["structure"] != binding["structure"]:
+                raise ValueError(f"Flap shortening loses receiving opening {identifier}'s engagement")
         if adjusted.overlaps or len(adjusted.panels) != len(self.panels):
             raise ValueError("Flap shortening changes material topology")
         adjusted.resize_metadata = self.resize_metadata
         adjusted.finger_cutout_settings = dict(self.finger_cutout_settings)
+        adjusted.preset_defaults = dict(self.preset_defaults)
         adjusted.flap_adjustments = self.flap_adjustments+adjustments
         _, remaining = shortening_plan(adjusted.panels, adjusted.seams, adjusted.contacts,
                                        adjusted._folded_transforms, polygon_for)
@@ -1369,13 +1429,29 @@ class PanelGraph:
                 effective["connector_depth"] = target_connector
 
         seam_by_id = {seam.id: seam for seam in self.seams}
+        flap_roots = {}
         for contact in self.contacts:
             seam = seam_by_id[contact.seam]
             parent = seam.panel_b if seam.panel_a == contact.tab else seam.panel_a
+            flap_roots[contact.tab] = (seam, parent, contact.receiver)
+        adjacency = self._adjacency()
+        for binding in self.opening_interactions.values():
+            for identifier in binding["structure"]:
+                if identifier not in flap_roots and len(adjacency[identifier]) == 1:
+                    parent, seam = adjacency[identifier][0]
+                    flap_roots[identifier] = (seam, parent, binding["receiver"])
+        for identifier, (seam, parent, receiver) in flap_roots.items():
             parent_mapper = mappers[parent]
+            if model["kind"] == "single":
+                reach_scale = effective["height"]/model["dimensions"]["height"]
+            elif parent == model.get("connector"):
+                reach_scale = effective["connector_depth"]/model["dimensions"]["connector_depth"]
+            else:
+                shell = "lid" if parent in model["top_shell"] or receiver in model["top_shell"] else "base"
+                reach_scale = effective[f"{shell}_height"]/model["dimensions"][f"{shell}_height"]
             transform = affine_between_segments(
-                seam.start, seam.end, parent_mapper(seam.start), parent_mapper(seam.end))
-            mappers[contact.tab] = lambda point, transform=transform: transform_point(point, transform)
+                seam.start, seam.end, parent_mapper(seam.start), parent_mapper(seam.end), reach_scale)
+            mappers[identifier] = lambda point, transform=transform: transform_point(point, transform)
 
         if model["kind"] == "separate":
             source_top_max = max(by_id[panel_id].polygon.bounds[3] for panel_id in model["top_shell"])
@@ -1390,31 +1466,46 @@ class PanelGraph:
                     mapper = mappers[panel_id]
                     mappers[panel_id] = lambda point, mapper=mapper: mapper(point)+complex(0, gap_adjustment)
 
+        if self.interaction_warnings:
+            raise ValueError(" ".join(self.interaction_warnings))
+        # Compute the resized folded assembly before placing receiving cuts.
+        # Matching is performed on intended, unshortened engaging structures.
+        panel_paths = {}
+        for panel in self.panels:
+            mapper = mappers[panel.id]
+            if gusset_resize:
+                x0, y0, x1, y1 = model["bounds"]
+                center = panel.polygon.centroid
+                if (center.x < x0 or center.x > x1) and (center.y < y0 or center.y > y1):
+                    anchor = complex(x0 if center.x < x0 else x1, y0 if center.y < y0 else y1)
+                    scale = effective["height"]/model["dimensions"]["height"]
+                    transform = translation_2d(mapper(anchor))@np.diag([scale, scale, 1])@translation_2d(-anchor)
+                    mapper = lambda point, transform=transform: transform_point(point, transform)
+                    mappers[panel.id] = mapper
+                    panel_paths[panel.id] = transform_path(panel.path, transform)
+                    continue
+            panel_paths[panel.id] = self._mapped_path(panel.path, mapper)
+        structural_records = [(panel.order, panel.id, panel_paths[panel.id], panel.outside_hint,
+                               "auto", panel.corner_treatments) for panel in self.panels]
+        target_graph = PanelGraph(self.source_name, self.near, self.snap_near,
+                                  _source_bytes=ET.tostring(self._source_document(structural_records, mappers)))
+        target_scores = {seam.id: seam.curve for seam in target_graph.seams}
+
         records = []
         owners = {}
         for panel in self.panels:
             mapper = mappers.get(panel.id)
             if mapper is None:
                 raise ValueError(f"Cannot assign resize role to panel {panel.id}")
-            mapped_panel = self._mapped_path(panel.path, mapper)
-            if gusset_resize:
-                x0, y0, x1, y1 = model["bounds"]
-                center = panel.polygon.centroid
-                if (center.x < x0 or center.x > x1) and (center.y < y0 or center.y > y1):
-                    # A corner gusset is structural geometry. Scale it uniformly
-                    # about its base corner so its diagonal and curved free edge
-                    # remain shared exactly, rather than treating it as a notch.
-                    anchor = complex(x0 if center.x < x0 else x1, y0 if center.y < y0 else y1)
-                    scale = effective["height"]/model["dimensions"]["height"]
-                    transform = translation_2d(mapper(anchor))@np.diag([scale, scale, 1])@translation_2d(-anchor)
-                    mapped_panel = transform_path(panel.path, transform)
-                    mapper = lambda point, transform=transform: transform_point(point, transform)
-                    mappers[panel.id] = mapper
+            mapped_panel = panel_paths[panel.id]
             records.append((panel.order, panel.id, mapped_panel, panel.outside_hint,
                             "auto", panel.corner_treatments))
             for shape in panel.internal:
-                path = map_internal(shape.path, panel.path, mapped_panel, mapper,
-                                    policy=shape.feature, tolerance=self.near)
+                binding = self.opening_interactions.get(shape.id)
+                path = (map_opening(self, binding, shape, panel_paths, target_graph._folded_transforms,
+                                    mappers, target_scores) if binding else
+                        map_internal(shape.path, panel.path, mapped_panel, mapper,
+                                     policy=shape.feature, tolerance=self.near))
                 records.append((shape.order, shape.id, path, shape.outside_hint,
                                 shape.feature, shape.corner_treatments))
                 owners[shape.id] = panel.id
@@ -1423,6 +1514,12 @@ class PanelGraph:
         resized = PanelGraph(self.source_name, self.near, self.snap_near,
                              _source_bytes=source_bytes, _source_name=self.source_name)
         resized = resized._shortened_flaps()
+        if resized.interaction_warnings:
+            raise ValueError(" ".join(resized.interaction_warnings))
+        for identifier, binding in self.opening_interactions.items():
+            target_binding = resized.opening_interactions.get(identifier)
+            if target_binding is None or target_binding["structure"] != binding["structure"]:
+                raise ValueError(f"Resize loses the folded engagement of receiving opening {identifier}")
         if resized.overlaps:
             raise ValueError("Resize creates overlapping panel interiors")
         if {panel.id for panel in resized.panels} != {panel.id for panel in self.panels}:
@@ -1442,17 +1539,18 @@ class PanelGraph:
                                    "source_dimensions": model["dimensions"],
                                    "effective_dimensions": effective,
                                    "reference_shell": "single" if model["kind"] == "single" else "base",
-                                   "feature_policy": "anchored-slots-and-rigid-cutouts"}
+                                    "feature_policy": "folded-engagement-and-fractional-internal-cuts"}
         if resized.flap_adjustments:
             resized.resize_metadata["flap_shortening"] = resized.flap_adjustments
         resized.finger_cutout_settings = dict(self.finger_cutout_settings)
+        resized.preset_defaults = dict(self.preset_defaults)
         return resized
 
     def report(self, thickness=None, fold_offset=None, lid_clearance=None):
-        if self.input_is_compiled:
-            thickness = self.compiled_settings.get("thickness") if thickness is None else thickness
-        fold_offset = self.compiled_settings.get("fold_offset", 0) if fold_offset is None else fold_offset
-        lid_clearance = self.compiled_settings.get("lid_clearance", 0) if lid_clearance is None else lid_clearance
+        if thickness is None:
+            thickness = self.compiled_settings.get("thickness", self.preset_defaults.get("thickness"))
+        fold_offset = self.compiled_settings.get("fold_offset", self.preset_defaults.get("fold_offset", 0)) if fold_offset is None else fold_offset
+        lid_clearance = self.compiled_settings.get("lid_clearance", self.preset_defaults.get("lid_clearance", 0)) if lid_clearance is None else lid_clearance
         internals = [{"id": shape.id, "panel": panel.id, "area": shape.polygon.area,
                       "outside_hint": shape.outside_hint, "feature": shape.feature}
                      for panel in self.panels for shape in panel.internal]
@@ -1476,6 +1574,9 @@ class PanelGraph:
                 "mirror_axes": len(self.mirror_axes),
                 "rotational_symmetry": self.rotational_symmetry,
                 "finger_cutout": self.finger_cutout_settings,
+                "opening_interactions": list(self.opening_interactions.values()),
+                "interaction_warnings": self.interaction_warnings,
+                "preset": self.preset_metadata,
                 "fold_stack": stack_plan(self, thickness, fold_offset) if not self.contact_warnings else [],
                 "structure": self.structure, "resizing": self._resize_structure(),
                 "lid_fit": self.lid_fit_plan(thickness, lid_clearance),
@@ -1488,7 +1589,9 @@ class PanelGraph:
                 "warnings": (([f"{len(self.near_seams)} near-coincident edge pair(s) are not folds; compile with --snap-near to repair them."]
                                if self.near_seams and not self.snap_near else [])+
                               ([f"{len(self.overlaps)} panel overlap(s) must be resolved before compiling."] if self.overlaps else [])+
-                               self.contact_warnings)}
+                                self.contact_warnings+self.interaction_warnings+
+                               (["Preset metadata is stale; run prepare again after editing the sketch."]
+                                if self.preset_metadata and self.preset_metadata["status"] == "stale" else []))}
 
     def _side_label(self, principal_id, wall_id, layout="connected"):
         by_id = {p.id: p for p in self.panels}
@@ -1540,8 +1643,10 @@ class PanelGraph:
         fragments = self._fragments()
         seams = {seam.id: seam.curve for seam in self.seams}
         internals = [(panel.id, shape, shape.path) for panel in self.panels for shape in panel.internal]
+        identity = {panel.id: lambda point: point for panel in self.panels}
+        original_paths = {panel.id: panel.path for panel in self.panels}
         if plan["status"] in ("none", "inferred"):
-            return fragments, seams, internals, plan
+            return fragments, seams, internals, plan, original_paths, identity
         by_id = {p.id: p for p in self.panels}
         adjacency = self._adjacency()
         top, connector = plan["top"], plan["connector"]
@@ -1609,7 +1714,9 @@ class PanelGraph:
                 lambda point, matrix=transforms[panel_id]: transform_point(point, matrix),
                 policy=shape.feature, tolerance=self.near) if panel_id in transforms else path)
                                for panel_id, shape, path in internals]
-            return fitted_fragments, fitted_seams, fitted_internals, plan
+            mappers = {**identity, **{identifier: lambda point, transform=transform: transform_point(point, transform)
+                                      for identifier, transform in transforms.items()}}
+            return fitted_fragments, fitted_seams, fitted_internals, plan, {**original_paths, **panel_paths}, mappers
 
         top_connector = next(seam for neighbor, seam in adjacency[top] if neighbor == connector)
         bottom = plan["bottom"]
@@ -1664,7 +1771,10 @@ class PanelGraph:
                 path = map_internal(path, by_id[panel_id].path, panel_paths[panel_id],
                                     map_connector_point, policy=shape.feature, tolerance=self.near)
             fitted_internals.append((panel_id, shape, path))
-        return fitted_fragments, fitted_seams, fitted_internals, plan
+        mappers = {**identity, **{identifier: lambda point, transform=transform: transform_point(point, transform)
+                                  for identifier, transform in transforms.items()}}
+        mappers[connector] = map_connector_point
+        return fitted_fragments, fitted_seams, fitted_internals, plan, {**original_paths, **panel_paths}, mappers
 
     def _fragments(self, panel_paths=None):
         panel_paths = panel_paths or {}
@@ -1694,7 +1804,7 @@ class PanelGraph:
 
     def _compensated_geometry(self, thickness, fold_offset, lid_clearance):
         plans = self.compensation_plan(thickness, fold_offset)
-        fragments, seams, internals, lid_fit = self._fitted_geometry(thickness, lid_clearance)
+        fragments, seams, internals, lid_fit, panel_paths, mappers = self._fitted_geometry(thickness, lid_clearance)
         shifts = {row["tab"]: complex(*row["shift"]) for row in plans}
         moved = []
         reliefs = []
@@ -1852,7 +1962,11 @@ class PanelGraph:
             shift = shifts.get(panel_id, 0j)
             path = transform_path(path, translation_2d(shift)) if shift else path
             moved_internals.append((panel_id, shape, path))
-        return moved, seams, moved_internals, reliefs, corner_reliefs, plans, lid_fit
+        for identifier, shift in shifts.items():
+            panel_paths[identifier] = transform_path(panel_paths[identifier], translation_2d(shift))
+            mapper = mappers[identifier]
+            mappers[identifier] = lambda point, mapper=mapper, shift=shift: mapper(point)+shift
+        return moved, seams, moved_internals, reliefs, corner_reliefs, plans, lid_fit, panel_paths, mappers
 
     def _trace(self, fragments):
         """Trace exposed source segments into closed contours, preserving curves."""
@@ -1973,15 +2087,17 @@ class PanelGraph:
             raise ValueError("Output format must be svg or dxf")
         finger_config = finger_settings(self.finger_cutout_settings, mode=finger_cutout,
                                         diameter=finger_cutout_diameter, depth=finger_cutout_depth)
-        if self.input_is_compiled:
-            thickness = self.compiled_settings.get("thickness") if thickness is None else thickness
-        fold_offset = self.compiled_settings.get("fold_offset", 0) if fold_offset is None else fold_offset
-        lid_clearance = self.compiled_settings.get("lid_clearance", 0) if lid_clearance is None else lid_clearance
+        if thickness is None:
+            thickness = self.compiled_settings.get("thickness", self.preset_defaults.get("thickness"))
+        fold_offset = self.compiled_settings.get("fold_offset", self.preset_defaults.get("fold_offset", 0)) if fold_offset is None else fold_offset
+        lid_clearance = self.compiled_settings.get("lid_clearance", self.preset_defaults.get("lid_clearance", 0)) if lid_clearance is None else lid_clearance
         if self.near_seams and not self.snap_near:
             raise ValueError("Near-coincident panel edges remain; use --snap-near after reviewing the diagnostics")
         if self.overlaps:
             pairs = ", ".join("/".join(row["panels"]) for row in self.overlaps)
             raise ValueError(f"Panel interiors overlap: {pairs}")
+        if self.interaction_warnings:
+            raise ValueError(" ".join(self.interaction_warnings))
         if any("Inconsistent fold cycle" in warning for warning in self.contact_warnings):
             raise ValueError(" ".join(self.contact_warnings))
         if thickness is not None and (not math.isfinite(thickness) or thickness < 0):
@@ -1999,7 +2115,7 @@ class PanelGraph:
                                     lid_clearance=lid_clearance, finger_cutout=finger_config["mode"],
                                     finger_cutout_diameter=finger_config["diameter"],
                                     finger_cutout_depth=finger_config["depth"], output_format=output_format)
-        fragments, seam_curves, internals, reliefs, corner_reliefs, compensation, lid_fit = self._compensated_geometry(
+        fragments, seam_curves, internals, reliefs, corner_reliefs, compensation, lid_fit, panel_paths, mappers = self._compensated_geometry(
             thickness, fold_offset, lid_clearance)
         contour_data = [self._untangle_contour(contour, treatments)
                         for contour, treatments in self._trace(fragments)]
@@ -2021,9 +2137,24 @@ class PanelGraph:
                 raise ValueError("Compensated exterior cut contours overlap")
         fold_stack = stack_plan(self, thickness, fold_offset)
         material = unary_union(contour_polygons)
-        for _, _, path in internals:
-            material = material.difference(polygon_for(path))
+        for _, shape, path in internals:
+            if shape.id not in self.opening_interactions:
+                material = material.difference(polygon_for(path))
         seam_curves = shifted_scores(self.seams, seam_curves, fold_stack, material, self.near)
+        if self.opening_interactions:
+            transforms = folded_transforms(self, panel_paths, seam_curves, (thickness or 0)+(fold_offset or 0))
+            boundaries = exposed_references(self, fragments)
+            internals = [(owner, shape, map_opening(self, self.opening_interactions[shape.id], shape,
+                                                   panel_paths, transforms, mappers, seam_curves, boundaries)
+                          if shape.id in self.opening_interactions else path)
+                         for owner, shape, path in internals]
+            for owner, shape, path in internals:
+                if not polygon_for(panel_paths[owner]).buffer(self.near).contains(polygon_for(path)):
+                    raise ValueError(f"Compensation moves receiving opening {shape.id} outside its panel")
+                if shape.id in self.opening_interactions and not projected_engagement(
+                        self, self.opening_interactions[shape.id], rounded_path(path, shape.corner_treatments),
+                        panel_paths, transforms):
+                    raise ValueError(f"Compensation loses the engagement of receiving opening {shape.id}")
         contour_data, finger_cutouts = apply_cutouts(
             self, contour_data, fragments, seam_curves, internals, finger_config,
             polygon_for=polygon_for, rounded_path=rounded_path)
@@ -2101,6 +2232,7 @@ class PanelGraph:
                     "rotational_symmetry": self.rotational_symmetry,
                     "finger_cutout": finger_config, "finger_cutouts": finger_cutouts,
                     "contacts": base_report["contacts"],
+                    "opening_interactions": base_report["opening_interactions"],
                     "flap_shortening": self.flap_adjustments,
                     "contact_diagnostics": self.contact_diagnostics,
                     "compensation": compensation_metadata,

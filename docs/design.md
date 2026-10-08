@@ -25,10 +25,13 @@ the presets, so the interactive menu also works outside a source checkout.
 - `session.py`: shared resize requests and shell-quoted replay commands.
 - `tui.py`: Questionary keyboard prompts and Rich review/results panels.
 - `dxf.py`: millimetre DXF manufacturing paths with coloured operation layers.
+- `prepare.py`: symmetry-constrained editable-source repair and readiness validation.
+- `presetmeta.py`: technical preset records and source fingerprints.
 - `panelgraph.py`: SVG import, panel/seam topology, shell inference, resizing,
   fitting, compensation, and SVG compilation.
 - `corners.py`: editable Inkscape fillet effects and physical radii.
-- `features.py`: anchored slots and rigid boundary/internal features.
+- `features.py`: rigid boundary features, fractional internal cuts, and slit rendering.
+- `interactions.py`: folded-geometry engagement, receiving-opening anchors, and compensated placement.
 - `flaps.py`: folded-footprint overlap and flap shortening.
 - `foldguides.py`: signed fold overlays and finite symmetry expansion.
 - `foldstack.py`: signed-fold thickness placement and closure checks.
@@ -63,6 +66,69 @@ shells can be fitted by expanding the outer lid.
 ```sh
 uv sync
 ```
+
+## Prepare a reusable preset
+
+```sh
+uv run boxxer prepare draft.svg --output presets/tray_gusset_self-locking_pinwheel.svg
+uv run boxxer prepare presets/tray_gusset_self-locking_pinwheel.svg --in-place
+# Optionally validate and store material defaults:
+uv run boxxer prepare draft.svg --output prepared.svg --thickness 0.4
+```
+
+`prepare` permanently reconciles near-coincident shared straight edges in the
+editable sketch. Its default movement limit is 0.01 mm, configurable with
+`--near-distance`. Preparation solves seed-vertex displacements against the
+expanded fold graph, including relationships from symmetry copies that were
+deduplicated. The compact source panels, mirror axes, and circular repeat markers
+remain editable; generated copies are not written into the preset.
+
+Shared seam endpoints, including partial seams, are constrained together.
+Straight-edge directions are preserved; edges already within the repair tolerance
+of a cardinal or 45° direction are canonicalized to that direction. Holes and
+receiving slots move rigidly rather than changing size. Native curve endpoints
+and adjacent controls are updated together, and active fillet effects are
+regenerated with their physical radii. Groups, transforms, fill placement,
+fold styles, and ignored construction geometry are retained. Changed SVG
+primitives can become paths. Redundant path subdivisions are retained to preserve
+corner-effect indexing rather than globally simplifying or merging nearby cuts.
+
+The result is reimported without `--snap-near` and must have no near seams,
+overlapping panels, or inconsistent fold cycles. Panel connectivity, signed
+angles, internal-cut ownership, and tab contacts must remain unchanged.
+Recognizable box dimensions and a successful manufacturing compile are required.
+Incompatible constraints or movements exceeding the tolerance are rejected.
+An existing source is replaced only with explicit `--in-place`, and output is
+installed atomically after validation.
+
+A separate `<boxxer:preset>` metadata record contains schema/tool version,
+millimetre dimensions, layout, counts of panels/folds/cuts, signed angle counts,
+symmetry order, repair tolerance, validation scope, and a source fingerprint.
+There is no human description or preset manifest. `--thickness`, `--fold-offset`,
+and `--lid-clearance` optionally store validated material defaults. Otherwise
+readiness describes uncompensated geometry, not every stock thickness or every
+possible target size. Existing fresh defaults survive repeated preparation.
+
+`inspect` reports whether preset metadata is **ready** or **stale**. Formatting,
+attribute order, editor view settings, and the record itself do not invalidate
+the fingerprint. Changes to geometry or drawing styles do; stale material defaults
+are ignored until preparation is run again. Metadata is advisory: actual geometry
+is still parsed and validated when the preset is used. Compiled manufacturing
+SVGs are not inputs to `prepare`; use their original editable source.
+
+### Preset filenames
+
+Use lowercase **`type_construction_fastening_layout.svg`**, omitting unnecessary
+parts and using hyphens inside phrases:
+
+- `box_clamshell_glued-flaps.svg`
+- `box_telescope_glued-flaps_pinwheel.svg`
+- `tray_flap_self-locking.svg`
+- `tray_gusset_self-locking_pinwheel.svg`
+
+“Pinwheel” describes the rotational arrangement; “self-locking” describes the
+glue-free fastening. The filename supplies the readable menu name, while technical
+properties are inferred and embedded by preparation.
 
 ## Fold overlays and symmetry markers
 
@@ -145,7 +211,7 @@ principal panel's creases fixed (falling back to the largest panel for an
 unrecognized component), and checks that parallel overlapping faces occupy
 separate material layers. Inconsistent loops are rejected even at zero thickness.
 
-For the top-left corner of `presets/gluefree.svg`, at `--thickness 0.4` and
+For a mirrored locking-gusset corner, at `--thickness 0.4` and
 `--fold-offset 0`, the solution is:
 
 - Vertical backside return crease: **0.4 mm left**.
@@ -172,7 +238,7 @@ scales corner gussets uniformly with wall height, preserving their diagonal
 angles and native curved boundaries; slots retain their feature rules.
 
 ```sh
-uv run boxxer compile presets/gluefree.svg --snap-near \
+uv run boxxer compile presets/tray_gusset_self-locking_pinwheel.svg --snap-near \
   --thickness 0.4 --fold-offset 0 --output compiled/gluefree-compiled.svg
 ```
 
@@ -184,7 +250,7 @@ geometry uses the same resizing, compensation, corner rendering, and cutout
 pipeline as SVG output. No intermediate Inkscape conversion is required.
 
 ```sh
-uv run boxxer compile presets/gluefree_rot.svg --snap-near \
+uv run boxxer compile presets/tray_gusset_self-locking_pinwheel.svg --snap-near \
   --thickness 0.4 --finger-cutout opposing --output box.dxf
 ```
 
@@ -381,25 +447,57 @@ Detached pieces retain their original material-to-material page gap.
 
 Structural spans stretch according to their role:
 
-- Receiving slots retain their width and end-cap profiles. Each end keeps its
-  original inset from the nearest transverse edge of the owning panel. Their
-  length therefore follows changes to that panel's span, while their lateral
-  position follows their fractional attachment position on those edges.
+- Matched receiving slits retain their width and end-cap profiles. Ends preserve
+  physical clearances from the closest relevant engaging-part limit, panel edge,
+  or score. Lateral position follows the engaging free boundary at a fixed
+  physical clearance, rather than a percentage across the receiver.
 - Finger cutouts and inward edge notches retain their complete profiles and their
   relative position along the supporting straight edge. A centred cutout stays
-  centred. Holes and other rigid internal cuts retain their size.
-- Tab roots grow with wall height while retaining fixed end reliefs. Flap depth
-  remains unchanged unless overlapping folded flaps require shortening.
+  centred. Unmatched internal cuts retain size and move fractionally with their
+  owning panel, including elongated decorative openings.
+- Tab roots grow with wall height while retaining fixed end reliefs. Flap reach
+  (distance from the attachment crease toward the free end) scales with the
+  owning shell's height; connector flaps use connector depth. This is separate
+  from attachment-span growth. Recognized rigid edge notches and curved cutouts
+  stay fixed-size. Gusset triangles and their native outline scale with height.
+  Overlapping same-side flaps can then be shortened as described below.
 
 For example, a vertical slot on a 20 mm wall with 3 mm insets at each end is
 14 mm long. Increasing the wall height to 30 mm makes it 24 mm long, with the same
 width and end insets. These feature rules also apply during lid fitting.
 
-Non-square rectangular and circular-ended rounded internal cuts are automatically
-treated as slots. Other internal profiles stay rigid. For an elongated decorative
-opening that should remain rigid, specify `boxxer:feature="fixed"`. Explicit
-`boxxer:feature="slot"` requires a supported slot profile and transverse edge
-anchors. Declare the namespace on the SVG root:
+### Geometric receiving-opening recognition
+
+Shape and aspect ratio do **not** recognize slots. In the zero-thickness folded
+assembly, an opening is matched when material from one eligible flap or folded
+gusset overlaps it in the receiver plane. Existing internal holes in the engaging
+part are subtracted before checking material overlap. Halves joined by a 180°
+gusset fold are one engaging structure; adjacency to 180° by itself does not
+establish an engagement. Matching uses the intended geometry before automatic
+overlap shortening. Multiple engaging structures at one opening are reported
+as ambiguous, and generation stops rather than guessing.
+
+The engaging part is resized first. Receiving openings are then mapped using its
+new folded geometry and physical clearances. Width/length-only changes retain
+corner attachment offsets for fixed-height flaps. Height changes increase flap
+reach and gusset size, moving the opening inward with its engaging boundary.
+For example, doubling a 14 mm flap's owning height doubles its reach to 28 mm;
+a slit centre 2.5 mm behind its tip remains 2.5 mm behind the new tip. Opening
+ends follow the closest matching limits, allowing length to change independently
+while preserving width and end radii.
+
+The same binding is applied after lid fitting and thickness compensation, using
+final score positions and folded surface axes. Losing a receiving relationship
+during resize/shortening or moving an opening outside its owner is rejected.
+This checks projected engagement; it does not simulate insertion, folding order,
+or material deformation while a tab passes through a slit.
+
+Rectangular and circular-ended profiles support longitudinal stretching. Other
+matched opening profiles retain size and translate with their engaging part.
+`boxxer:feature="fixed"` suppresses automatic engagement inference for a decorative
+opening even if it lies underneath a flap; it still follows the receiver
+fractionally. `boxxer:feature="slot"` requires a unique geometric engagement and
+does not manufacture one based on shape. Declare the namespace on the SVG root:
 
 ```xml
 <svg xmlns="http://www.w3.org/2000/svg"
@@ -610,8 +708,9 @@ With explicit near-edge repair:
 
 The historical `second.svg` example used dashed curved tabs for outside-placement
 hints; updated sketches must use solid fills instead.
-Its four rounded slot shapes are retained unchanged as internal cuts owned by the
-two side-wall panels. Boxxer does not yet simulate tabs entering slots.
+Its four rounded opening shapes are owned by the two side-wall panels. Current
+receiving-opening behaviour is inferred from folded geometry rather than their
+shape or dash style; physical insertion is not simulated.
 
 One connected component is one material piece. Exactly two components are assigned
 upper-lid/lower-base roles only when each independently satisfies the shell

@@ -53,7 +53,7 @@ def diagram(parent, drawing, x):
 
 
 def main():
-    source = ROOT/"presets"/"gluefree_rot.svg"
+    source = ROOT/"presets"/"tray_gusset_self-locking_pinwheel.svg"
     graph = PanelGraph(source, snap_near=True)
     output = io.BytesIO()
     report = graph.compile(output, thickness=.4, finger_cutout="opposing")

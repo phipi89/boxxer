@@ -206,7 +206,7 @@ def interactive_session(input_path=None, directory=PRESET_DIRECTORY, *, input_fn
                 "Connector depth (mm)", dimensions["connector_depth"], minimum=1.0000001,
                 input_fn=input_fn, print_fn=print_fn)
 
-    stored = graph.compiled_settings
+    stored = {**graph.preset_defaults, **graph.compiled_settings}
     thickness_default = stored.get("thickness")
     if thickness_default is None:
         thickness_default = preset.get("thickness")
@@ -286,6 +286,8 @@ def terminal_session(input_path, directory):
 
 def print_report(report):
     print(f"Panel source: {report['source']}")
+    if report.get("preset"):
+        print(f"Preset metadata: {report['preset']['status']}")
     print(f"Panels: {len(report['panels'])}; internal cuts: {len(report['internal_geometry'])}; components: {len(report['components'])}")
     print(f"Folds: {len(report['folds'])}; near-coincident edge pairs: {len(report['near_edges'])}")
     for panel in report["panels"]:
@@ -310,6 +312,9 @@ def print_report(report):
         print(f"Inferred glue-tab contacts: {len(report['contacts'])}")
         for contact in report["contacts"]:
             print(f"  {contact['tab']} → {contact['receiver']} via {contact['fold']} ({contact['placement']})")
+    for binding in report.get("opening_interactions", []):
+        print(f"Receiving opening {binding['opening']} on {binding['receiver']} follows folded "
+              f"{binding['kind']} {', '.join(binding['structure'])}")
     structure = report.get("structure", {})
     if structure.get("status") == "inferred":
         if structure.get("layout") == "separate":
@@ -366,6 +371,16 @@ def print_report(report):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
+    prepared = subparsers.add_parser("prepare", help="Repair an editable sketch and embed technical preset metadata")
+    prepared.add_argument("input", type=Path)
+    destination = prepared.add_mutually_exclusive_group(required=True)
+    destination.add_argument("--output", "-o", type=Path)
+    destination.add_argument("--in-place", action="store_true", help="Replace the input sketch after successful validation")
+    prepared.add_argument("--near-distance", type=float, default=DEFAULT_NEAR, help="Maximum repair movement in mm")
+    prepared.add_argument("--thickness", type=float, help="Validate and store default material thickness in mm")
+    prepared.add_argument("--fold-offset", type=float, help="Store a default fold adjustment in mm")
+    prepared.add_argument("--lid-clearance", type=float, help="Store a default lid clearance in mm")
+    prepared.add_argument("--json", action="store_true")
     for name in ("inspect", "compile", "resize"):
         command = subparsers.add_parser(name)
         command.add_argument("input", type=Path)
@@ -406,6 +421,29 @@ def main():
     interactive.add_argument("--plain", action="store_true", help="Use plain text prompts instead of keyboard menus")
     args = parser.parse_args()
     try:
+        if args.command == "prepare":
+            from .prepare import prepare
+            output = args.input if args.in_place else args.output
+            if output.suffix.lower() != ".svg":
+                raise ValueError("Prepared presets must be SVG files")
+            if not args.in_place and paths_alias(output, args.input):
+                raise ValueError("Use --in-place to replace the source sketch")
+            data, report = prepare(args.input, near=args.near_distance, thickness=args.thickness,
+                                   fold_offset=args.fold_offset, lid_clearance=args.lid_clearance)
+            temporary = temporary_output(output)
+            try:
+                temporary.write_bytes(data)
+                replace_outputs([(temporary, output)])
+            finally:
+                temporary.unlink(missing_ok=True)
+            report["output"] = str(output)
+            if args.json:
+                print(json.dumps(report, indent=2))
+            else:
+                print(f"Prepared {output}: {report['preset']['panels']} panels, {report['preset']['folds']} folds; "
+                      f"{report['repaired_seams']} repaired seam(s), maximum vertex movement "
+                      f"{report['maximum_vertex_shift']:.6f} mm")
+            return 0
         if args.command == "interactive":
             report = (terminal_session(args.input, args.presets)
                       if not args.plain and sys.stdin.isatty() and sys.stdout.isatty()
@@ -416,7 +454,7 @@ def main():
         if args.near_distance is not None and (not math.isfinite(args.near_distance) or args.near_distance <= 0):
             raise ValueError("Near-edge distance must be finite and positive")
         graph = PanelGraph(args.input, args.near_distance, args.snap_near)
-        stored = graph.compiled_settings
+        stored = {**graph.preset_defaults, **graph.compiled_settings}
         thickness = args.thickness if args.thickness is not None else stored.get("thickness")
         fold_offset = args.fold_offset if args.fold_offset is not None else stored.get("fold_offset", 0)
         lid_clearance = args.lid_clearance if args.lid_clearance is not None else stored.get("lid_clearance", 0)

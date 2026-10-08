@@ -1,0 +1,23 @@
+<?xml version='1.0' encoding='utf-8'?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:boxxer="https://boxxer.local/ns/1" width="210mm" height="297mm" viewBox="0 0 210 297">
+  <g fill="none" stroke="#000000">
+    <rect id="lid-face" x="50" y="40" width="100" height="100" />
+    <rect id="lid-wall-top" x="50" y="20" width="100" height="20" />
+    <rect id="lid-wall-right" x="150" y="40" width="20" height="100" />
+    <rect id="lid-wall-bottom" x="50" y="140" width="100" height="20" />
+    <rect id="lid-wall-left" x="30" y="40" width="20" height="100" />
+    <rect id="lid-tab-top" x="150" y="20" width="17" height="17" />
+    <rect id="lid-tab-right" x="153" y="140" width="17" height="17" />
+    <rect id="lid-tab-bottom" x="33" y="143" width="17" height="17" />
+    <rect id="lid-tab-left" x="30" y="23" width="17" height="17" />
+    <rect id="base-face" x="50" y="200" width="100" height="100" />
+    <rect id="base-wall-top" x="50" y="180" width="100" height="20" />
+    <rect id="base-wall-right" x="150" y="200" width="20" height="100" />
+    <rect id="base-wall-bottom" x="50" y="300" width="100" height="20" />
+    <rect id="base-wall-left" x="30" y="200" width="20" height="100" />
+    <rect id="base-tab-top" x="150" y="180" width="17" height="17" />
+    <rect id="base-tab-right" x="153" y="300" width="17" height="17" />
+    <rect id="base-tab-bottom" x="33" y="303" width="17" height="17" />
+    <rect id="base-tab-left" x="30" y="183" width="17" height="17" />
+  </g>
+<metadata><boxxer:preset>{"defaults":{},"dimensions":{"base_height":20.0,"length":100.0,"lid_height":20.0,"lid_length":100.0,"lid_width":100.0,"width":100.0},"fold_angles":{"90":16},"folds":16,"geometry_sha256":"faf4c4db8732ab8701438c401576e77b3ff0748b10c932ddfdafd78d85710ef2","internal_cuts":0,"layout":"separate","mirror_axes":0,"near_distance":0.01,"panels":18,"rotation_order":1,"schema":1,"tool_version":"0.1.0","units":"mm","validation":{"compile":true,"material_thickness":null}}</boxxer:preset></metadata></svg>

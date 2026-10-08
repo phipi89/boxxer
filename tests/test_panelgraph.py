@@ -386,7 +386,7 @@ class PanelGraphTests(unittest.TestCase):
         self.assertEqual((working.structure["top"], working.structure["bottom"]), ("rect1", "rect5"))
         self.assertEqual(len(working.contacts), 8)
 
-        source = ROOT / "presets" / "separate-lid-box.svg"
+        source = ROOT / "presets" / "box_glued-flaps_separate-lid.svg"
         graph = PanelGraph(source)
         self.assertEqual(len(graph.components), 2)
         self.assertEqual(graph.structure["layout"], "separate")
@@ -479,7 +479,7 @@ class PanelGraphTests(unittest.TestCase):
 
     def test_separate_lid_fit_rejects_overlapping_output_contours(self):
         with tempfile.TemporaryDirectory() as directory:
-            tree = ET.parse(ROOT / "presets" / "separate-lid-box.svg")
+            tree = ET.parse(ROOT / "presets" / "box_glued-flaps_separate-lid.svg")
             for node in tree.findall(f".//{{{SVG}}}rect"):
                 if node.get("id", "").startswith("base-"):
                     node.set("y", str(float(node.get("y"))-19.8))

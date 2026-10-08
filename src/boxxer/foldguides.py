@@ -100,7 +100,7 @@ def reflection(line):
     return result
 
 
-def expand_symmetry(shapes, guides, polygon_for, tolerance, rotations=()):
+def expand_symmetry(shapes, guides, polygon_for, tolerance, rotations=(), *, provenance=None, duplicates=None):
     axes = [guide for guide in guides if guide.angle is None]
     folds = [guide for guide in guides if guide.angle is not None]
     unique_axes = []
@@ -130,6 +130,9 @@ def expand_symmetry(shapes, guides, polygon_for, tolerance, rotations=()):
         if len(unique_axes) == 2 and rotation.order % 2:
             raise ValueError("Two perpendicular mirrors require an even rotation order")
     shapes, folds = list(shapes), list(folds)
+    origins = {shape.id: (shape.id, np.eye(3)) for shape in shapes}
+    if provenance is not None:
+        provenance.update(origins)
     identifiers = {shape.id for shape in shapes} | {guide.id for guide in guides}
 
     def identifier(base, suffix):
@@ -155,8 +158,17 @@ def expand_symmetry(shapes, guides, polygon_for, tolerance, rotations=()):
                            for i, treatment in shape.corner_treatments.items())
                        for other in matches):
                     raise ValueError(f"Conflicting symmetry copies of material at {shape.id}")
+                if duplicates is not None:
+                    seed, previous = origins[shape.id]
+                    target_seed, target_matrix = origins[matches[0].id]
+                    duplicates.append((seed, transform@previous, target_seed, target_matrix))
                 continue
-            shapes.append(replace(shape, id=identifier(shape.id, suffix), path=path,
+            new_id = identifier(shape.id, suffix)
+            seed, previous = origins[shape.id]
+            origins[new_id] = (seed, transform@previous)
+            if provenance is not None:
+                provenance[new_id] = origins[new_id]
+            shapes.append(replace(shape, id=new_id, path=path,
                                   polygon=polygon, order=len(shapes)))
         for guide in source_folds:
             line = transform_path(Path(guide.line), transform)[0]
