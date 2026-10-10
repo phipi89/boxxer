@@ -12,20 +12,28 @@ from unittest.mock import patch
 from unittest.mock import Mock
 from rich.console import Console
 
-from boxxer.cli import interactive_session, terminal_session
+from boxxer.cli import interactive_session, suggested_output_name, terminal_session
 from boxxer.panelgraph import PanelGraph
 from boxxer.tui import Navigate, TerminalWizard
 from tests.test_fingercuts import tray
 
 
 class SessionTests(unittest.TestCase):
+    def test_suggested_name_uses_type_dimensions_thickness_and_symmetry(self):
+        class Sketch:
+            source_name = "tray_gusset_self-locking_pinwheel.svg"
+
+        self.assertEqual(suggested_output_name(
+            Sketch(), {"width": 40, "length": 40, "height": 30}, .4),
+            "tray_40x40x30x0.4_pinwheel.svg")
+
     def test_equivalent_command_replays_exact_outputs_with_quoted_paths(self):
         with tempfile.TemporaryDirectory(prefix="boxxer sketches ") as directory:
             source = Path(directory)/"a 'quoted' sketch.svg"
             output = Path(directory)/"compiled box.svg"
             editable = Path(directory)/"editable box.svg"
             source.write_bytes(tray())
-            answers = iter(["", "50", "50", "50", ".4", ".1", "opposing", str(output), str(editable), "y"])
+            answers = iter(["", "50", "50", "50", ".4", "opposing", str(output), str(editable), "y"])
             with redirect_stdout(io.StringIO()):
                 report = interactive_session(source, input_fn=lambda _: next(answers), print_fn=lambda *args: None)
             expected_output, expected_source = output.read_bytes(), editable.read_bytes()
@@ -43,14 +51,22 @@ class SessionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory)/"compiled.svg"
             PanelGraph("generated.svg", _source_bytes=tray()).compile(
-                source, thickness=.4, finger_cutout="one", finger_cutout_diameter=20, finger_cutout_depth=6)
+                source, thickness=.4, fold_offset=.1, finger_cutout="one", finger_cutout_diameter=20, finger_cutout_depth=6)
             output = Path(directory)/"out.svg"
-            answers = iter(["", "", "", "", "", "", "", str(output), "", "y"])
+            answers = iter(["", "", "", "", "", "", str(output), "", "y"])
+            prompts = []
+
+            def answer(prompt):
+                prompts.append(prompt)
+                return next(answers)
+
             with redirect_stdout(io.StringIO()):
-                report = interactive_session(source, input_fn=lambda _: next(answers), print_fn=lambda *args: None)
+                report = interactive_session(source, input_fn=answer, print_fn=lambda *args: None)
             args = shlex.split(report["equivalent_command"])
             self.assertEqual(args[args.index("--finger-cutout-diameter")+1], "20")
             self.assertEqual(args[args.index("--finger-cutout-depth")+1], "6")
+            self.assertNotIn("Fold offset (mm) [", prompts)
+            self.assertEqual(report["metadata"]["fold_offset"], 0)
 
     def test_terminal_retains_entered_values_and_cancel(self):
         wizard = TerminalWizard([])
@@ -149,7 +165,7 @@ class SessionTests(unittest.TestCase):
             source = Path(directory)/"sketch.svg"
             source.write_bytes(tray(height=20.0001))
             output = Path(directory)/"out.svg"
-            answers = iter(["", "", "", "", "", "", "none", str(output), "", "y"])
+            answers = iter(["", "", "", "", "", "none", str(output), "", "y"])
             prompts = []
 
             def answer(prompt):

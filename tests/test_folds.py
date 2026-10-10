@@ -190,7 +190,7 @@ class FoldSketchTests(unittest.TestCase):
             target = FilePath(directory)/"compiled.svg"
             editable = FilePath(directory)/"editable.svg"
             (FilePath(directory)/"signed-tray.svg").write_bytes(quarter())
-            answers = iter(["1", "", "120", "80", "30", ".4", "", "", str(target), str(editable), "y"])
+            answers = iter(["1", "", "120", "80", "30", ".4", "", str(target), str(editable), "y"])
             with redirect_stdout(io.StringIO()):
                 result = interactive_session(directory=directory, input_fn=lambda _: next(answers), print_fn=lambda *args: None)
             self.assertEqual(result["metadata"]["thickness"], .4)

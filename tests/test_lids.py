@@ -112,7 +112,7 @@ class MatchingLidTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="boxxer matching lids ") as directory:
             source, output, editable = Path(directory)/"tray.svg", Path(directory)/"pair.svg", Path(directory)/"editable.svg"
             source.write_bytes(graph_from_shapes(tray_shapes()).source_bytes)
-            answers = iter(["y", "60", "50", "15", "10", ".4", "", ".2", "opposing", str(output), str(editable), "y"])
+            answers = iter(["y", "60", "50", "15", "10", ".4", ".2", "opposing", str(output), str(editable), "y"])
             with redirect_stdout(io.StringIO()):
                 report = interactive_session(source, input_fn=lambda _: next(answers), print_fn=lambda *args: None)
             self.assertEqual(report["cut_contours"], 2)

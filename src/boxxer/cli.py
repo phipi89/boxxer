@@ -150,6 +150,20 @@ def prompt_yes_no(label, default=True, *, input_fn=input, print_fn=print):
         print_fn("Enter y or n, or q to cancel.")
 
 
+def suggested_output_name(graph, dimensions, thickness):
+    """Build a readable output name from the sketch kind and target dimensions."""
+    import re
+    tokens = re.split(r"[_-]+", Path(graph.source_name).stem.lower())
+    while tokens and tokens[-1] in {"compiled", "resized", "output"}:
+        tokens.pop()
+    category = next((name for name in ("clamshell", "telescope", "tray", "box") if name in tokens), "box")
+    symmetry = next((name for name in ("pinwheel", "mirrored", "mirror", "rotational") if name in tokens), None)
+    values = [dimensions.get("width"), dimensions.get("length"),
+              dimensions.get("lid_height", dimensions.get("base_height", dimensions.get("height"))), thickness]
+    size = "x".join(f"{value:g}" for value in values)
+    return f"{category}_{size}"+(f"_{symmetry}" if symmetry else "")+".svg"
+
+
 def choose_interactive_source(input_path, directory, *, input_fn=input, print_fn=print, ui=None):
     if input_path is not None:
         return Path(input_path), {}
@@ -218,18 +232,13 @@ def interactive_session(input_path=None, directory=PRESET_DIRECTORY, *, input_fn
     if thickness_default is None:
         thickness_default = preset.get("thickness")
     thickness_default = 0.5 if thickness_default is None else thickness_default
-    fold_default = stored.get("fold_offset")
-    if fold_default is None:
-        fold_default = preset.get("fold_offset")
-    fold_default = 0.0 if fold_default is None else fold_default
     clearance_default = stored.get("lid_clearance")
     if clearance_default is None:
         clearance_default = preset.get("lid_clearance")
     clearance_default = 0.0 if clearance_default is None else clearance_default
     thickness = prompt_float("Material thickness (mm)", thickness_default, minimum=0,
                              input_fn=input_fn, print_fn=print_fn)
-    fold_offset = prompt_float("Fold offset (mm)", fold_default,
-                               input_fn=input_fn, print_fn=print_fn)
+    fold_offset = 0.0
     lid_clearance = 0.0
     if resize_model["kind"] != "single":
         lid_clearance = prompt_float("Lid clearance (mm)", clearance_default, minimum=0,
@@ -243,8 +252,8 @@ def interactive_session(input_path=None, directory=PRESET_DIRECTORY, *, input_fn
         print_fn("Choose none, one, or opposing.")
     cutout_diameter, cutout_depth = cutout_defaults["diameter"], cutout_defaults["depth"]
 
-    stem = Path(graph.source_name).stem
-    output = Path(prompt_text("Compiled output", f"{stem}-compiled.svg", input_fn=input_fn)).expanduser()
+    output_default = suggested_output_name(graph, dimensions | resize_options, thickness)
+    output = Path(prompt_text("Compiled output", output_default, input_fn=input_fn)).expanduser()
     source_value = prompt_text("Editable source output (blank for none)", input_fn=input_fn)
     source_output = Path(source_value).expanduser() if source_value else None
     validate_resize_paths(source, output, source_output)

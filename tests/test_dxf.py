@@ -129,7 +129,7 @@ class DxfTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             source, output = FilePath(directory)/"tray.svg", FilePath(directory)/"out.dxf"
             source.write_bytes(tray())
-            answers = iter(["", "50", "50", "50", ".4", "", "opposing", str(output), "", "y"])
+            answers = iter(["", "50", "50", "50", ".4", "opposing", str(output), "", "y"])
             with redirect_stdout(io.StringIO()):
                 report = interactive_session(source, input_fn=lambda _: next(answers), print_fn=lambda *args: None)
             self.assertEqual(report["output_format"], "dxf")

@@ -661,8 +661,11 @@ filename, with readable names derived from their filenames. There is no manifest
 Use another folder with `--presets path/to/sketches`. Adding or removing an SVG
 updates the menu automatically; nested folders and non-SVG files are ignored.
 Manufacturing defaults are thickness 0.5 mm, fold offset 0, and lid clearance 0;
-compiled SVGs reuse their stored settings. Interactive output uses the same validation,
-hard-link protection, and atomic writes as the regular `resize` command.
+the wizard does not prompt for fold offset and always uses zero. It suggests an
+output name from the sketch category, target dimensions, material thickness, and
+recognized symmetry label (for example, `tray_40x40x30x0.4_pinwheel.svg`).
+Compiled SVGs reuse their stored thickness and clearance. Interactive output uses
+the same validation, hard-link protection, and atomic writes as the regular `resize` command.
 
 After successful generation, both interfaces print an **equivalent command**.
 It includes the source, target dimensions, near-edge tolerance and repair mode,
