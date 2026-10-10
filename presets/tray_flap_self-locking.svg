@@ -1,12 +1,112 @@
-<?xml version='1.0' encoding='utf-8'?>
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:boxxer="https://boxxer.local/ns/1" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" xmlns:ns1="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd" width="210mm" height="297mm" viewBox="0 0 210 297" version="1.1" id="svg1" ns1:docname="tray_glued-flaps_outside.svg" inkscape:version="1.4.4 (dcaf3e7, 2026-05-05)">
-  <defs id="defs1" />
-  <ns1:namedview id="namedview1" pagecolor="#ffffff" bordercolor="#666666" borderopacity="1.0" inkscape:showpageshadow="2" inkscape:pageopacity="0.0" inkscape:pagecheckerboard="0" inkscape:deskcolor="#d1d1d1" inkscape:document-units="mm" inkscape:zoom="1.0294338" inkscape:cx="289.47951" inkscape:cy="293.85085" inkscape:window-width="1710" inkscape:window-height="1044" inkscape:window-x="0" inkscape:window-y="40" inkscape:window-maximized="1" inkscape:current-layer="svg1" />
-  <path id="rect1" style="fill:none;stroke:#000000" d="M 52.58743883333333,43.160964320506885 L 152.58744116666668,43.160964320506885 L 152.58744116666668,143.16096567949313 L 52.58743883333333,143.16096567949313 L 52.58743883333333,43.160964320506885" />
-  <path id="rect2" style="fill:none;stroke:#000000" d="M 52.58743883333333,23.160962910038013 L 152.58744116666668,23.160962910038013 L 152.58744116666668,43.16096432050689 L 52.58743883333333,43.16096432050689 L 52.58743883333333,23.160962910038013" />
-  <path id="rect3" transform="rotate(-90)" style="fill:none;stroke:#000000" d="M -143.16096567949313,32.587433 L -43.160964320506885,32.587433 L -43.160964320506885,52.58743883333332 L -143.16096567949313,52.58743883333333 L -143.16096567949313,32.587433" />
-  <path id="rect4-20" stroke-dasharray="1, 1" d="M 35.58744002330238,23.06096494733535 L 36.9601699522456,23.668352915895056 L 40.35752602445202,23.06096490298581 L 52.58743883333334,23.06096490298581 L 52.58743883333334,40.060966101884354 L 40.222551,40.06096610188436 L 37.904995,40.06096610188436 C 37.22246,39.25111710188436 36.449942,39.251113999999994 35.58744,40.060964999999996 C 32.657561,39.986934999999995 32.71449302330238,23.08107494733535 35.58744002330238,23.06096494733535" style="fill:#eaeaea;stroke:#000000;fill-opacity:1;stroke-dasharray:none" />
-  <rect id="rect5" width="1.3727303" height="16.185688" x="55.112949" y="-50.193012" transform="rotate(90)" ry="0.68636513" style="fill:none;stroke:#000000" />
-  <path style="fill:none;stroke:#000000;stroke-width:0.264583px;stroke-linecap:butt;stroke-linejoin:miter;stroke-dasharray:2.11666, 0.529166, 0.264583, 0.529166;stroke-dashoffset:0;stroke-opacity:1" d="M 102.58744,9.2526587 V 100.49415" id="path1" />
-  <path style="fill:none;stroke:#000000;stroke-width:0.264583px;stroke-linecap:butt;stroke-linejoin:miter;stroke-dasharray:2.11666, 0.529166, 0.264583, 0.529166;stroke-dashoffset:0;stroke-opacity:1" d="M 25.096425,93.160965 H 116.33792" id="path2" />
-<metadata><boxxer:preset>{"defaults":{},"dimensions":{"height":20.000003621901097,"length":100.00000135898625,"width":100.00000233333336},"fold_angles":{"90":8},"folds":8,"geometry_sha256":"f3fc8407215c6fb031e979cd99afede8b5a25ba8f72364cc2874484e75e5096c","internal_cuts":4,"layout":"single","mirror_axes":2,"near_distance":0.01,"panels":9,"rotation_order":1,"schema":1,"tool_version":"0.1.0","units":"mm","validation":{"compile":true,"material_thickness":null}}</boxxer:preset></metadata></svg>
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="210mm"
+   height="297mm"
+   viewBox="0 0 210 297"
+   version="1.1"
+   id="svg1"
+   sodipodi:docname="tray_flap_self-locking.svg"
+   inkscape:version="1.4.4 (dcaf3e7, 2026-05-05)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg"
+   xmlns:boxxer="https://boxxer.local/ns/1">
+  <defs
+     id="defs1">
+    <inkscape:path-effect
+       effect="fillet_chamfer"
+       id="path-effect4"
+       is_visible="true"
+       lpeversion="1"
+       nodesatellites_param="F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1"
+       radius="0"
+       unit="px"
+       method="auto"
+       mode="F"
+       chamfer_steps="1"
+       flexible="false"
+       use_knot_distance="true"
+       apply_no_radius="true"
+       apply_with_radius="true"
+       only_selected="false"
+       hide_knots="false" />
+    <inkscape:path-effect
+       effect="fillet_chamfer"
+       id="path-effect1"
+       is_visible="true"
+       lpeversion="1"
+       nodesatellites_param="F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1"
+       radius="0"
+       unit="px"
+       method="auto"
+       mode="F"
+       chamfer_steps="1"
+       flexible="false"
+       use_knot_distance="true"
+       apply_no_radius="true"
+       apply_with_radius="true"
+       only_selected="false"
+       hide_knots="false" />
+  </defs>
+  <sodipodi:namedview
+     id="namedview1"
+     pagecolor="#ffffff"
+     bordercolor="#666666"
+     borderopacity="1.0"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:document-units="mm"
+     inkscape:zoom="8.9803455"
+     inkscape:cx="156.17439"
+     inkscape:cy="211.90721"
+     inkscape:window-width="1539"
+     inkscape:window-height="937"
+     inkscape:window-x="85"
+     inkscape:window-y="94"
+     inkscape:window-maximized="0"
+     inkscape:current-layer="svg1" />
+  <path
+     id="rect1"
+     style="fill:none;stroke:#000000;stroke-width:0.999997"
+     d="M 112.58744,43.160964 V 103.16097 H 52.587439 V 43.160964 Z"
+     sodipodi:nodetypes="ccccc" />
+  <path
+     id="rect2"
+     style="fill:none;stroke:#000000;stroke-width:0.999997"
+     d="M 112.58744,23.160963 V 43.160964 H 52.587439 V 23.160963 Z"
+     sodipodi:nodetypes="ccccc" />
+  <path
+     id="rect3"
+     style="opacity:1;fill:none;stroke:#000000;stroke-width:0.999997"
+     d="M 32.587433,43.160964 H 52.587439 V 103.16097 H 32.587433 Z"
+     sodipodi:nodetypes="ccccc" />
+  <path
+     id="rect4-20"
+     stroke-dasharray="1, 1"
+     d="m 36.96017,29.060018 c 0.578936,-0.0216 0.41711,-0.605624 1.690564,-1.483447 1.273454,-0.877823 7.666777,-4.415608 13.936705,-4.415608 v 18.28828 c 0,0 -12.870283,-0.572463 -13.836848,-0.810734 -1.732977,-0.4272 -1.326878,-1.015272 -1.946565,-0.995777 -0.616528,0.0194 -0.304073,0.548596 -1.216586,0.518231 -0.798666,-0.02658 -0.911511,-11.698278 0,-11.708333 0.911511,-0.01006 0.793794,0.628984 1.37273,0.607388 z"
+     style="fill:#eaeaea;fill-opacity:1;stroke:#000000;stroke-width:1;stroke-dasharray:none"
+     sodipodi:nodetypes="zzccssszz" />
+  <path
+     id="rect5"
+     d="m 50.659343,53.63582 v 1.25 H 35.090816 v -1.25 z"
+     style="fill:none;stroke:#000000;stroke-width:1;stroke-linejoin:miter;stroke-dasharray:none" />
+  <path
+     style="fill:none;stroke:#000000;stroke-width:0.264583px;stroke-linecap:butt;stroke-linejoin:miter;stroke-dasharray:2.11666, 0.529166, 0.264583, 0.529166;stroke-dashoffset:0;stroke-opacity:1"
+     d="M 82.587441,9.2526587 V 87.70811"
+     id="path1" />
+  <path
+     style="fill:none;stroke:#000000;stroke-width:0.264583px;stroke-linecap:butt;stroke-linejoin:miter;stroke-dasharray:2.11666, 0.529166, 0.264583, 0.529166;stroke-dashoffset:0;stroke-opacity:1"
+     d="M 25.096425,73.160967 H 97.896517"
+     id="path2" />
+  <metadata
+     id="metadata1">
+    <boxxer:preset>{&quot;defaults&quot;:{},&quot;dimensions&quot;:{&quot;height&quot;:20.000003621901097,&quot;length&quot;:100.00000135898625,&quot;width&quot;:100.00000233333336},&quot;fold_angles&quot;:{&quot;90&quot;:8},&quot;folds&quot;:8,&quot;geometry_sha256&quot;:&quot;f3fc8407215c6fb031e979cd99afede8b5a25ba8f72364cc2874484e75e5096c&quot;,&quot;internal_cuts&quot;:4,&quot;layout&quot;:&quot;single&quot;,&quot;mirror_axes&quot;:2,&quot;near_distance&quot;:0.01,&quot;panels&quot;:9,&quot;rotation_order&quot;:1,&quot;schema&quot;:1,&quot;tool_version&quot;:&quot;0.1.0&quot;,&quot;units&quot;:&quot;mm&quot;,&quot;validation&quot;:{&quot;compile&quot;:true,&quot;material_thickness&quot;:null}}</boxxer:preset>
+  </metadata>
+  <path
+     id="path3"
+     d="m 49.602452,58.259067 v 1.25 H 37.978204 v -1.25 z"
+     style="fill:none;stroke:#000000;stroke-width:1;stroke-linejoin:miter;stroke-dasharray:none" />
+</svg>

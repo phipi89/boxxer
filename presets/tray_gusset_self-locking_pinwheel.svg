@@ -22,9 +22,9 @@
      inkscape:pagecheckerboard="0"
      inkscape:deskcolor="#d1d1d1"
      inkscape:document-units="mm"
-     inkscape:zoom="4.2387582"
-     inkscape:cx="240.16468"
-     inkscape:cy="188.85248"
+     inkscape:zoom="1.4811892"
+     inkscape:cx="331.82796"
+     inkscape:cy="246.76118"
      inkscape:window-width="1710"
      inkscape:window-height="1044"
      inkscape:window-x="0"
@@ -74,16 +74,15 @@
     <path
        style="opacity:1;fill:none;stroke:#000000;stroke-width:1;stroke-linecap:square;stroke-linejoin:miter;stroke-dasharray:none;stroke-opacity:1;paint-order:markers fill stroke"
        id="rect1"
-       d="M 60.51349512307692,60.334402723076906 L 160.51364927692308,60.3344027230769 L 160.51364927692308,160.33455687692305 L 60.51349512307692,160.33455687692305 L 60.51349512307692,60.334402723076906" />
+       d="M 60.513495,60.334403 H 120.5135 V 120.3344 H 60.513495 V 60.334403" />
     <path
        style="opacity:1;fill:none;stroke:#000000;stroke-width:1;stroke-linecap:square;stroke-linejoin:miter;stroke-dasharray:none;stroke-opacity:1;paint-order:markers fill stroke"
        id="rect2"
-       d="M 60.51349512307692,40.334279133333325 L 160.51364927692308,40.334279133333325 L 160.51364927692308,60.334402723076906 L 60.51349512307692,60.334402723076906 L 60.51349512307692,40.334279133333325" />
+       d="M 60.513495,40.334279 H 120.5135 V 60.334403 H 60.513495 V 40.334279" />
     <path
        style="opacity:1;fill:none;stroke:#000000;stroke-width:1;stroke-linecap:square;stroke-linejoin:miter;stroke-dasharray:none;stroke-opacity:1;paint-order:markers fill stroke"
        id="rect3"
-       transform="rotate(-90)"
-       d="M -160.33455687692305,40.51337153333335 L -60.334402723076906,40.51337153333335 L -60.3344027230769,60.51349512307693 L -160.33455687692305,60.513495123076936 L -160.33455687692305,40.51337153333335" />
+       d="M 40.513372,120.3344 V 60.334403 H 60.513495 V 120.3344 H 40.513372" />
     <rect
        style="opacity:1;fill:none;stroke:#000000;stroke-width:0.999999;stroke-linejoin:miter;paint-order:markers fill stroke"
        id="rect15"
@@ -101,26 +100,26 @@
        d="M 60.51349512307692,40.334279133333325 L 60.51349512307692,60.334402723076906 L 60.51349512307692,40.334279133333325"
        id="path3" />
     <path
-       style="fill:none;stroke:#ff0000;stroke-width:0.264999;stroke-linejoin:miter;stroke-dasharray:1.06, 0.53, 0.264999, 0.53;stroke-dashoffset:0;stroke-opacity:1;paint-order:markers fill stroke"
+       style="fill:none;stroke:#000000;stroke-width:0.2;stroke-linejoin:miter;stroke-dasharray:0.8, 0.4, 0.2, 0.4;stroke-dashoffset:0;stroke-opacity:1;paint-order:markers fill stroke"
        id="path6"
        sodipodi:type="arc"
-       sodipodi:cx="110.51357"
-       sodipodi:cy="110.33448"
-       sodipodi:rx="102.58744"
-       sodipodi:ry="102.58744"
+       sodipodi:cx="90.513496"
+       sodipodi:cy="90.334404"
+       sodipodi:rx="82.669922"
+       sodipodi:ry="82.669922"
        sodipodi:start="3.1415927"
        sodipodi:end="4.712389"
-       sodipodi:open="true"
        sodipodi:arc-type="arc"
-       d="M 7.9261322,110.33448 A 102.58744,102.58744 0 0 1 110.51357,7.7470398" />
+       d="M 7.8435745,90.334404 A 82.669922,82.669922 0 0 1 90.513496,7.6644821"
+       sodipodi:open="true" />
     <path
-       style="fill:none;stroke:#000000;stroke-width:0.165;stroke-linecap:butt;stroke-linejoin:miter;stroke-opacity:1;opacity:0.24111675;stroke-dasharray:none"
-       d="M 110.51352,0 V 120.66827"
-       id="path7" />
-    <path
-       style="fill:none;stroke:#000000;stroke-width:0.165;stroke-linecap:butt;stroke-linejoin:miter;stroke-opacity:1;opacity:0.24111675;stroke-dasharray:none"
-       d="M 0.17938679,110.33413 H 120.84765"
+       style="opacity:0.241117;fill:none;stroke:#000000;stroke-width:0.2;stroke-linecap:butt;stroke-linejoin:miter;stroke-dasharray:none;stroke-opacity:1"
+       d="M 0.17938679,90.334401 H 120.84765"
        id="path8" />
+    <path
+       style="opacity:0.241117;fill:none;stroke:#000000;stroke-width:0.2;stroke-linecap:butt;stroke-linejoin:miter;stroke-dasharray:none;stroke-opacity:1"
+       d="M 90.513497,0 V 120.66827"
+       id="path7" />
   </g>
   <metadata
      id="metadata1">
