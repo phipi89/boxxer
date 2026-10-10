@@ -27,11 +27,14 @@ the presets, so the interactive menu also works outside a source checkout.
 - `dxf.py`: millimetre DXF manufacturing paths with coloured operation layers.
 - `prepare.py`: symmetry-constrained editable-source repair and readiness validation.
 - `presetmeta.py`: technical preset records and source fingerprints.
+- `tolerances.py`: independent positional repair and geometry-cleanup thresholds.
 - `panelgraph.py`: SVG import, panel/seam topology, shell inference, resizing,
   fitting, compensation, and SVG compilation.
 - `corners.py`: editable Inkscape fillet effects and physical radii.
 - `features.py`: rigid boundary features, fractional internal cuts, and slit rendering.
 - `interactions.py`: folded-geometry engagement, receiving-opening anchors, and compensated placement.
+- `reinforcements.py`: own-wall returns, end-clearance constraints, and final layer checks.
+- `lids.py`: matching detached lids copied from uncompensated tray construction.
 - `flaps.py`: folded-footprint overlap and flap shortening.
 - `foldguides.py`: signed fold overlays and finite symmetry expansion.
 - `foldstack.py`: signed-fold thickness placement and closure checks.
@@ -61,6 +64,50 @@ component virtually, infers unambiguous leaf-tab contacts, and moves the tab,
 crease, and attached internal geometry together. Connected and detached top/bottom
 shells can be fitted by expanding the outer lid.
 
+### Virtual folding and generalisation
+
+Virtual folding constructs a rigid pose for each panel without changing the
+flat SVG geometry. One panel is the anchor for each connected component. The
+seams form an adjacency graph; Boxxer walks a spanning tree and composes a 4×4
+rigid transform for every hinge rotation. A panel's pose therefore includes the
+rotations along its whole path from the anchor. In signed-fold components, the
+hinge axis is the scored material surface, offset half a stock thickness to the
+valley or mountain side.
+
+Once posed in 3D, panel footprints can be projected into a receiving panel's
+local plane. Coplanar overlap identifies potential tab contacts and receiving
+openings. The same poses inform reinforcement-return placement and checks for
+overlapping parallel material layers. Thickness compensation, fitted walls, and
+folded-opening placement adjust or replace hinges, then the final assembly is
+evaluated again using those modified score lines.
+
+This folding calculation is not specific to a design name: it handles arbitrary
+panel IDs and orders, transformed or oblique panels, mixed signed angles, and
+closed fold cycles that satisfy the closure test. Recognition and resizing are
+more specialized than the rotations themselves. The current resize solver
+recognizes rectangular, axis-aligned principal faces and box-like wall layouts;
+shell roles use established connected/detached enclosure structure. Glue tabs,
+reinforcement returns, and cyclic locking gussets each add physical assumptions
+for contact and layer placement. Curved boundaries are preserved, but the
+virtual fold solver requires straight hinge axes. It treats panels as rigid and
+does not simulate fold motion, bending/compression, slit insertion, or every
+possible solid-body collision.
+
+**Possible future step — convex polygon trays.** A regular hexagonal tray can
+already be represented and folded as a panel graph, but it cannot yet be resized
+as a single-shell box: the resize model currently requires a rectangular
+principal face and assumes 90° corner glue-tab compensation. General polygon
+support would detect a convex principal face from its surrounding wall hinges,
+resize edges in their own local frames, and infer each glue flap's rotation from
+the connected wall plane and folded overlap. The flap's hinge determines its
+angle; the panel's shared edge supplies its span. Thickness allowance must then
+be derived for that dihedral angle instead of reusing the 90° wall-corner rule.
+The API should support independent width/length edge-family targets and a
+shape-preserving uniform-scale option. Generated tests should cover several
+convex polygons and asymmetric wall/flap geometry before adding any particular
+polygon as a named preset. This is a future capability; non-rectangular tray
+resizing is not currently supported.
+
 ## Setup
 
 ```sh
@@ -77,7 +124,7 @@ uv run boxxer prepare draft.svg --output prepared.svg --thickness 0.4
 ```
 
 `prepare` permanently reconciles near-coincident shared straight edges in the
-editable sketch. Its default movement limit is 0.01 mm, configurable with
+editable sketch. Its default movement limit is 0.1 mm, configurable with
 `--near-distance`. Preparation solves seed-vertex displacements against the
 expanded fold graph, including relationships from symmetry copies that were
 deduplicated. The compact source panels, mirror axes, and circular repeat markers
@@ -203,7 +250,7 @@ separate plotter setup step. Backside scores are displayed blue and dashed.
 
 ### Gusset thickness and crease placement
 
-Signed-fold components use a **scored-surface sharp-hinge model**: panels are
+Cyclic signed-fold components use a **scored-surface sharp-hinge model**: panels are
 midplanes, and the hinge lies half a thickness above the midplane for a valley
 or below it for a mountain. Every closed loop is checked with the signed angles.
 Thickness placement solves all crease shifts together, keeps the recognized
@@ -221,7 +268,7 @@ For a mirrored locking-gusset corner, at `--thickness 0.4` and
 The two returning gusset midplanes sit 0.4 mm and 0.8 mm behind the wall's
 midplane. Half-thickness surface offsets are already included in the hinge
 equations; subtracting another 0.2 mm from the horizontal shift would break
-closure. For these signed-fold components, `fold_offset` adjusts the effective
+closure. For these cyclic signed-fold components, `fold_offset` adjusts the effective
 layer pitch to `thickness + fold_offset`; it defaults to zero. A negative value
 that makes physical layers overlap is rejected. Existing unannotated glue-tab
 designs retain their original compensation rule below.
@@ -378,6 +425,8 @@ Compilation produces:
 - Red paths for shared fold seams.
 - Black paths for contained internal geometry, such as the four slots in
   `second.svg`.
+- DXF additionally emits three explicit indexed-colour layers: black `CUT`, red
+  `SCORE_FRONT`, and blue `SCORE_BACK`.
 - Separate black open paths for inward-fold relief cuts.
 - Embedded `boxxer:model` JSON metadata containing source panel IDs, folds,
   components, inside/outside hints, repairs, contact inference, compensation,
@@ -410,9 +459,26 @@ removed from both panels, and neighboring exposed segments are joined at the
 repaired seam endpoints. The original file is never changed. Every discrepancy
 is recorded in the metadata.
 
-The default near-edge search distance is 0.01 mm. Override it with
+The default near-edge search distance is 0.1 mm. Override it with
 `--near-distance`, but this is a candidate-search and repair limit, not a hidden
-manufacturing tolerance:
+manufacturing tolerance.
+
+Positional repair is separate from attachment coverage: a wall or flap may
+share only part of its parent's edge. Principal-face recognition uses distinct
+attachment sides, wall geometry, and the enclosure's connected structure, rather
+than requiring full-edge hinges. The actual shared interval is retained during
+resizing, fitting, and cutting. Small endpoint mismatches up to 0.01 mm still
+receive numerical cleanup; larger intended end reliefs are not extended merely
+because they fall within the 0.1 mm positional search range. The minimum useful
+straight shared interval remains 0.01 mm, independently of that range.
+
+Contour tracing follows exact joins and known hinge-end connections before
+nearby alternatives, so a short relief or a short real hinge is not skipped by
+the larger repair range. Compiled inputs and fresh prepared presets retain their
+stored search tolerance unless explicitly overridden; newly imported sketches
+and `prepare` use the shared 0.1 mm default.
+
+For example, to use a tighter search range:
 
 ```sh
 uv run boxxer inspect design.svg --near-distance 0.002
@@ -641,6 +707,55 @@ edge and the compensated crease while retaining a simple exterior contour.
 Outside-tab root connectors remain part of the exterior contour. Internal cuts
 owned by a moved tab translate rigidly with that tab.
 
+### Reinforcement returns mixed with glue tabs
+
+A leaf joined by a ±180° hinge whose folded footprint overlaps its own parent
+wall is recognized as a reinforcement return. This uses connectivity and folded
+geometry, not panel IDs, filenames, or rectangular shape alone. The fold's sign
+and the parent's material-face orientation determine inward/outward placement.
+Gusset members joined in a cycle retain the cyclic surface-hinge model instead
+of being treated as ordinary tree returns.
+
+An inward return and an inside glue tab can share the first inner material layer
+when their footprints are disjoint. Adding a return does not disable ordinary
+glue-tab contact inference in the rest of the assembly. Tree returns rotate
+about their scored surface; the 90° joints retain the existing calibrated
+midplane compensation. Cyclic gussets continue to use surface axes throughout
+their loop. One shared pose evaluator is used for compensation measurements,
+receiving openings, and final layer checks, avoiding a second 90° surface
+allowance in the ordinary glue-tab model.
+
+During resize, return depth follows its wall's height ratio. Its longitudinal
+ends preserve their nearest source clearance to wall boundaries or the folded
+footprints of same-side glue tabs. Where a tab grows into a reserved corner area,
+the return shortens accordingly while retaining the authored gap. Updated return
+hinges are written with the new span. The constraints are included in
+`resize.return_clearances`; contacts are reported in `reinforcements` metadata.
+
+Wall-end references include the visible straight attachment boundary's endpoints,
+so chamfers and fillet tangency points provide limits even without a perpendicular
+end edge. Contiguous collinear subdivisions are merged for this reference search;
+an editing vertex does not become an artificial clearance anchor. These same
+constraints are applied during lid fitting. Updated hinge spans also update the
+wall's shared/exposed intervals before tracing, and internal cuts on a resized
+return follow its final mapper. Fitting constraints are included in
+`lid_fit.return_clearances`.
+
+At a wall/return/glue-tab junction, the exposed supporting-wall end can continue
+through the return's boundary. Square-overlap compensation follows that connected
+return rather than assuming the wall itself has a free cut segment at the corner.
+Outward base returns and inward lid returns contribute to the nesting gap;
+disjoint returns and glue tabs on one face count as one occupied layer, not two.
+
+Parallel material-layer overlap is checked **after** fitting, compensation,
+score placement, and receiving-opening placement. Small numerical intersection
+slivers bounded by curve-flattening error and approved seam-repair discrepancies
+are ignored; genuine overlapping footprints at insufficient plane separation
+are rejected. This is a final parallel-layer check, not a folding-motion or
+solid-volume collision simulator. A return overlapping a tab in the same layer
+needs deliberate clearance or an explicitly supported different layer arrangement;
+the exporter does not invent an unmarked fold sequence or a multi-ply wrap bend.
+
 ### Overlapping flaps
 
 Before manufacturing paths are generated, inferred flaps are compared in their
@@ -663,6 +778,37 @@ reported in CLI output and `flap_shortening` metadata.
 
 ## Lid fitting
 
+### Generate a matching lid from a tray
+
+For a single recognizable rectangular tray with four structural walls,
+`compile --with-lid` or `resize --with-lid` generates a detached telescoping lid
+and places both nets in one SVG or DXF:
+
+```sh
+uv run boxxer resize presets/tray_gusset_self-locking_pinwheel.svg --snap-near \
+  --with-lid --width 80 --length 60 --base-height 20 --lid-height 15 \
+  --thickness 0.4 --lid-clearance 0.2 --finger-cutout opposing \
+  --output tray-and-lid.svg
+```
+
+The copy starts from uncompensated source geometry. It preserves the tray's
+gussets, glue tabs, reinforcement returns, receiving openings, inside/outside
+markers, signed folds, and editable corner effects. Symmetry is expanded before
+copying. The lid defaults to the tray's wall height; `--lid-height` overrides it,
+and `resize` also accepts an independent `--base-height`.
+
+The lid is placed above the base with a 10 mm source-layout gap. Fitting then
+expands the lid for the folded material envelope and per-side clearance while
+retaining the requested base dimensions. Output reports page overflow without
+scaling the nets to fit. Finger cutouts apply to the lid only.
+
+The wizard asks **Create matching lid** for a single tray and includes the choice
+in its equivalent command. Source output and compiled SVG metadata retain both
+shells; recompiling uses that embedded uncompensated pair without generating
+another copy. `--with-lid` requires a single tray and rejects an existing enclosure.
+
+### Fit the folded material envelope
+
 Boxxer recognizes either two dominant principal faces joined by a simple,
 non-branching connector or exactly two disconnected components that each form one
 valid box shell. By convention, the principal face higher on the SVG page is the
@@ -677,7 +823,7 @@ The outer-lid wall offset is calculated independently for each corresponding wal
 pair:
 
 ```text
-thickness + gap-facing flap layers * thickness + lid_clearance
+thickness + gap-facing material layers * thickness + lid_clearance
 ```
 
 An inside flap on the top shell occupies the nesting gap, as does an outside flap
@@ -688,11 +834,18 @@ unchanged bottom edge. A detached lid has four independently fitted wall pairs;
 its base remains unchanged. `--lid-clearance` adds nonnegative per-side
 manufacturing clearance and defaults to zero.
 
+Gap-facing layers include glue tabs, reinforcement returns, and folded cyclic
+gussets. The allowance uses the outermost occupied ply on each gap-facing wall
+surface, then combines the lid and base contributions. Disjoint footprints in
+one ply count once; a two-ply gusset counts twice. Thus 0.4 mm stock with two
+gap-facing gusset plies requires a 1.2 mm wall offset before added clearance.
+
 Automatic lid fitting currently requires straight principal and shell folds and
 axis-aligned rectangular principal faces. A connected layout requires one shared
 connector panel; a detached layout requires exactly two recognizable shells.
-Unsupported, cyclic, or ambiguous structures are reported rather than reshaped
-heuristically. Glue-contact residuals are verified on local source geometry before
+Recognized cyclic gussets are supported within each shell. Unsupported or ambiguous
+structures are reported rather than reshaped heuristically. Glue-contact residuals
+are verified on local source geometry before
 lid fitting and are labeled accordingly in connected-layout metadata; emitted fold
 lengths in metadata reflect the fitted paths.
 

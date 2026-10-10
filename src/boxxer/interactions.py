@@ -242,11 +242,11 @@ def folded_transforms(graph, paths, scores, pitch=0):
     """Compose final hinges for projected opening placement, including surface axes."""
     from .panelgraph import rotation_3d
     result = {}
+    surface_axes = surface_seams(graph)
     adjacency = graph._adjacency()
     for component in graph.components:
         root = graph._fold_root(component)
         result[root] = np.eye(4)
-        signed = any(seam.annotated and seam.angle != 90 and seam.panel_a in component for seam in graph.seams)
         queue = [root]
         while queue:
             parent = queue.pop(0)
@@ -256,12 +256,30 @@ def folded_transforms(graph, paths, scores, pitch=0):
                 curve = scores[seam.id]
                 if not isinstance(curve, Line):
                     raise ValueError("Opening engagement requires straight fold hinges")
-                point = polygon_for_path(paths[child]).representative_point()
-                interior = complex(point.x, point.y)-curve.start
-                side = ((curve.end-curve.start).conjugate()*interior).imag
+                panel = next(panel for panel in graph.panels if panel.id == child)
+                point = panel.polygon.representative_point()
+                interior = complex(point.x, point.y)-seam.start
+                # Fold sense belongs to the source material side. A compensated
+                # axis crossing a centroid must not reverse the requested fold.
+                side = ((seam.end-seam.start).conjugate()*interior).imag
                 surface = np.eye(4)
-                surface[2, 3] = math.copysign(pitch/2, seam.angle) if signed else 0
+                surface[2, 3] = math.copysign(pitch/2, seam.angle) if seam.id in surface_axes else 0
                 result[child] = result[parent]@surface@rotation_3d(
                     curve.start, curve.end, math.copysign(1, side)*math.radians(seam.angle))@np.linalg.inv(surface)
                 queue.append(child)
+    return result
+
+
+def surface_seams(graph):
+    """Cyclic gussets use surface axes throughout; tree returns only at 180°.
+
+    Ordinary 90° corner tabs retain their calibrated midplane compensation.
+    Multiple pieces of one shared boundary do not introduce a logical cycle.
+    """
+    result = {seam.id for seam in graph.seams if abs(seam.angle) == 180}
+    for component in graph.components:
+        seams = [seam for seam in graph.seams if seam.panel_a in component]
+        edges = {frozenset((seam.panel_a, seam.panel_b)) for seam in seams}
+        if len(edges) >= len(component) and any(seam.angle != 90 for seam in seams):
+            result.update(seam.id for seam in seams)
     return result

@@ -33,9 +33,27 @@ uv run boxxer compile presets/tray_gusset_self-locking_pinwheel.svg --snap-near 
   --thickness 0.4 --finger-cutout opposing --output box.svg
 ```
 
+Add `--with-lid` to generate a matching telescoping lid alongside a single tray
+in the same output. The lid keeps the tray's construction and expands to fit the
+folded material layers; use `--lid-height` to give it a different wall height.
+
 Draw adjoining panels with shared edges for folds. Boxxer also supports signed
 folds, mirror and rotational symmetry, and editable rounded corners. Output has
 black cuts, red front-side scores, and blue dashed backside scores.
+
+### How Boxxer works, simply
+
+Think of the SVG as pieces of paper laid flat. Each closed shape is a piece;
+where two pieces share an edge, that edge is a fold. Boxxer follows those
+connections and virtually hinges the pieces into shape. That lets it work out
+which flaps meet which walls, then adjust the drawing for box size and paper
+thickness before making the cut and score paths.
+
+The same idea works for many nets, without Boxxer knowing the sketch's filename
+or requiring panel names. Today, resizing is tuned for rectangular box bases and
+recognized wall layouts; it does not automatically handle every folded-paper
+mechanism. See the [design guide](docs/design.md) for how virtual folding works
+and where the model generalizes.
 
 For Silhouette Studio Basic, use an output filename ending in **`.dxf`**. DXF
 uses millimetres and separate black/red/blue cut and score layers. In Studio,
@@ -43,7 +61,10 @@ import at original size (not “Fit to Page”) and use **Send → Line** to ass
 operations by colour. DXF score geometry is continuous, including backside scores.
 
 To turn an editable draft into a reusable preset, repair its shared edges and
-embed technical metadata:
+embed technical metadata.
+
+Shared edges can cover only part of a wall or flap. Near-edge repair defaults
+to 0.1 mm; use `--near-distance` to choose another tolerance.
 
 ```sh
 uv run boxxer prepare draft.svg --output presets/tray_gusset_self-locking_pinwheel.svg

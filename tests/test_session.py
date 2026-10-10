@@ -25,7 +25,7 @@ class SessionTests(unittest.TestCase):
             output = Path(directory)/"compiled box.svg"
             editable = Path(directory)/"editable box.svg"
             source.write_bytes(tray())
-            answers = iter(["50", "50", "50", ".4", ".1", "opposing", str(output), str(editable), "y"])
+            answers = iter(["", "50", "50", "50", ".4", ".1", "opposing", str(output), str(editable), "y"])
             with redirect_stdout(io.StringIO()):
                 report = interactive_session(source, input_fn=lambda _: next(answers), print_fn=lambda *args: None)
             expected_output, expected_source = output.read_bytes(), editable.read_bytes()
@@ -45,7 +45,7 @@ class SessionTests(unittest.TestCase):
             PanelGraph("generated.svg", _source_bytes=tray()).compile(
                 source, thickness=.4, finger_cutout="one", finger_cutout_diameter=20, finger_cutout_depth=6)
             output = Path(directory)/"out.svg"
-            answers = iter(["", "", "", "", "", "", str(output), "", "y"])
+            answers = iter(["", "", "", "", "", "", "", str(output), "", "y"])
             with redirect_stdout(io.StringIO()):
                 report = interactive_session(source, input_fn=lambda _: next(answers), print_fn=lambda *args: None)
             args = shlex.split(report["equivalent_command"])
@@ -95,7 +95,7 @@ class SessionTests(unittest.TestCase):
             with patch("boxxer.tui.questionary.select", side_effect=select), \
                     patch("boxxer.tui.questionary.text", side_effect=text), \
                     patch("boxxer.tui.questionary.confirm") as confirm:
-                confirm.return_value.ask.return_value = True
+                confirm.side_effect = lambda label, **kwargs: Mock(ask=Mock(return_value=label != "Create matching lid"))
                 report = interactive_session(directory=directory, input_fn=wizard.input,
                                              print_fn=wizard.print, ui=wizard)
             self.assertTrue(output.exists())
@@ -149,7 +149,7 @@ class SessionTests(unittest.TestCase):
             source = Path(directory)/"sketch.svg"
             source.write_bytes(tray(height=20.0001))
             output = Path(directory)/"out.svg"
-            answers = iter(["", "", "", "", "", "none", str(output), "", "y"])
+            answers = iter(["", "", "", "", "", "", "none", str(output), "", "y"])
             prompts = []
 
             def answer(prompt):
@@ -182,6 +182,7 @@ class SessionTests(unittest.TestCase):
 
             with patch("boxxer.tui.TerminalWizard", return_value=wizard), \
                     patch("boxxer.tui.questionary.select", side_effect=select), \
+                    patch("boxxer.tui.questionary.confirm", return_value=Mock(ask=Mock(return_value=False))), \
                     patch("boxxer.tui.questionary.text", side_effect=text):
                 report = terminal_session(source, Path(directory))
             self.assertEqual(report["metadata"]["resize"]["effective_dimensions"]["width"], 60)

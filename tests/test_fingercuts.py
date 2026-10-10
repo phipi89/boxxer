@@ -192,7 +192,7 @@ class FingerCutoutTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             source, target = FilePath(directory)/"source.svg", FilePath(directory)/"out.svg"
             source.write_bytes(tray())
-            answers = iter(["", "", "", "", "", "opposing", str(target), "", "y"])
+            answers = iter(["", "", "", "", "", "", "opposing", str(target), "", "y"])
             with redirect_stdout(io.StringIO()):
                 report = interactive_session(source, input_fn=lambda _: next(answers), print_fn=lambda *args: None)
             self.assertEqual(len(report["finger_cutouts"]), 2)

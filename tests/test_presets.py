@@ -26,7 +26,7 @@ class PresetDirectoryTests(unittest.TestCase):
             source = directory/"sketch.svg"
             source.write_bytes(ET.tostring(root))
             output = directory/"out.svg"
-            answers = iter(["50", "50", "50", ".4", "", "opposing", str(output), "", "y"])
+            answers = iter(["", "50", "50", "50", ".4", "", "opposing", str(output), "", "y"])
             prompts, messages = [], []
 
             def answer(prompt):
@@ -76,7 +76,7 @@ class PresetDirectoryTests(unittest.TestCase):
                 output = directory/"result.svg"
                 if output.exists():
                     output.unlink()
-                answers = "\n".join([selection, "80", "70", "25", "", "", "none", str(output), "", "y"])+"\n"
+                answers = "\n".join([selection, "", "80", "70", "25", "", "", "none", str(output), "", "y"])+"\n"
                 result = subprocess.run([sys.executable, "-m", "boxxer", "interactive", "--presets", str(directory)],
                                         input=answers, text=True, capture_output=True)
                 self.assertEqual(result.returncode, 0, result.stderr)

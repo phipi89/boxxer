@@ -11,7 +11,7 @@ from svgpathtools import Line, Path
 from svgpathtools.path import transform as transform_path
 
 from .corners import INKSCAPE, lpe_attributes, rounded_path
-from .panelgraph import SVG, PanelGraph, move_segment_endpoint
+from .panelgraph import DEFAULT_NEAR, SVG, PanelGraph, move_segment_endpoint
 from .presetmeta import embed
 
 
@@ -136,7 +136,7 @@ def write_path(element, world_path, transform, treatments, root, index):
         element.set("d", local.d())
 
 
-def prepare(filename, *, near=.01, thickness=None, fold_offset=None, lid_clearance=None):
+def prepare(filename, *, near=DEFAULT_NEAR, thickness=None, fold_offset=None, lid_clearance=None):
     defaults = {key: value for key, value in {"thickness": thickness, "fold_offset": fold_offset,
                                              "lid_clearance": lid_clearance}.items() if value is not None}
     if any(not math.isfinite(value) for value in defaults.values()):
@@ -206,6 +206,7 @@ def prepare(filename, *, near=.01, thickness=None, fold_offset=None, lid_clearan
                            "panels": len(ready.panels), "folds": len(ready.seams),
                            "internal_cuts": sum(len(panel.internal) for panel in ready.panels),
                            "receiving_openings": len(ready.opening_interactions),
+                           "reinforcement_returns": len(ready.reinforcements),
                            "fold_angles": {str(angle): sum(seam.angle == angle for seam in ready.seams)
                                            for angle in sorted({seam.angle for seam in ready.seams})},
                            "rotation_order": ready.rotational_symmetry[0]["order"] if ready.rotational_symmetry else 1,

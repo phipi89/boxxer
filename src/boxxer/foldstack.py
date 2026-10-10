@@ -1,18 +1,20 @@
 """Finite-thickness score placement for explicitly annotated folded components.
 
-Panels are rigid midplanes. Each hinge rotates at the scored surface, +t/2
-for valley and -t/2 for mountain. This is a sharp-hinge construction, not a
-bend-radius or material-compression model. Crease shifts are solved together
-around cycles, keeping the largest panel's creases fixed.
+Panels are rigid midplanes. Cyclic signed-fold components use scored-surface
+axes, +t/2 for valley and -t/2 for mountain, and solve crease shifts together.
+Tree returns use a surface axis only at their 180° fold; ordinary 90° joints
+retain calibrated glue compensation. Principal creases remain anchored.
+This is a sharp-hinge construction, not a bend-radius/compression model.
 """
 import math
 
 import numpy as np
 from shapely.geometry import LineString, Point, Polygon
 from svgpathtools import Line
+from .tolerances import AREA_EPS
 
 
-def stack_plan(graph, thickness, adjustment):
+def stack_plan(graph, thickness, adjustment, *, check_collisions=True):
     thickness = thickness or 0.0
     if not math.isfinite(thickness) or thickness < 0 or not math.isfinite(adjustment):
         raise ValueError("Fold stack thickness and adjustment must be finite; thickness must be nonnegative")
@@ -24,6 +26,17 @@ def stack_plan(graph, thickness, adjustment):
     for component in graph.components:
         seams = [seam for seam in graph.seams if seam.panel_a in component]
         if not any(seam.annotated and seam.angle != 90 for seam in seams):
+            continue
+        logical_edges = {frozenset((seam.panel_a, seam.panel_b)) for seam in seams}
+        if len(logical_edges) < len(component):
+            # A tree return needs a surface hinge, not a gusset loop solve.
+            # Check its occupancy with the final fitted/glue-compensated poses.
+            rows.extend({"fold": seam.id, "angle": seam.angle,
+                         "score_side": "front" if seam.angle > 0 else "back",
+                         "shift": [0.0, 0.0], "distance": 0.0, "thickness": thickness,
+                         "fold_offset": adjustment, "layer_pitch": pitch, "closure_residual": 0.0,
+                         "model": "scored-surface-return-hinge"}
+                        for seam in seams if abs(seam.angle) == 180)
             continue
         if graph.contact_warnings:
             raise ValueError("Cannot place signed-fold scores: " + " ".join(graph.contact_warnings))
@@ -87,7 +100,7 @@ def stack_plan(graph, thickness, adjustment):
                 separation = abs(float((world[0]-other[0])@normal))
                 overlap = polygon.intersection(Polygon(other@rotation[:, :2])).area
                 repair_tolerance = max(1e-7, sum(seam.discrepancy for seam in seams)*2)
-                if overlap > graph.near**2 and separation < thickness-repair_tolerance:
+                if check_collisions and overlap > AREA_EPS and separation < thickness-repair_tolerance:
                     raise ValueError(f"Folded material layers overlap: {identifier}/{other_id}; "
                                      "fold offset cannot compress physical thickness")
         for index, seam in enumerate(seams):

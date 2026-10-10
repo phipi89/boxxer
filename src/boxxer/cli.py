@@ -72,9 +72,11 @@ def replace_outputs(replacements):
 
 def resize_and_compile(graph, input_path, output, source_output, resize_options, *,
                        thickness, fold_offset, lid_clearance, finger_cutout=None,
-                       finger_cutout_diameter=None, finger_cutout_depth=None):
+                       finger_cutout_diameter=None, finger_cutout_depth=None, with_lid=False):
     validate_resize_paths(input_path, output, source_output)
-    resized = graph.resized(**resize_options)
+    working = graph.with_lid() if with_lid else graph
+    resized = (working.resized(**resize_options) if any(value is not None for value in resize_options.values())
+               or not with_lid else working)
     compiled_temp = temporary_output(output)
     source_temp = None
     try:
@@ -178,6 +180,11 @@ def interactive_session(input_path=None, directory=PRESET_DIRECTORY, *, input_fn
     resize_model = graph._resize_structure()
     if resize_model["status"] != "supported":
         raise ValueError("Cannot resize this panel graph: "+resize_model["reason"])
+    with_lid = False
+    if resize_model["kind"] == "single":
+        with_lid = prompt_yes_no("Create matching lid", default=False, input_fn=input_fn, print_fn=print_fn)
+        if with_lid:
+            resize_model = graph.with_lid()._resize_structure()
     dimensions = resize_model["dimensions"]
     print_fn(f"Detected {resize_model['kind']} box net.")
     print_fn("Current dimensions: "+", ".join(
@@ -248,7 +255,8 @@ def interactive_session(input_path=None, directory=PRESET_DIRECTORY, *, input_fn
         raise InteractiveCancelled
 
     request = ResizeRequest(source, output, source_output, resize_options, thickness, fold_offset,
-                            lid_clearance, finger_cutout, cutout_diameter, cutout_depth, graph.near, graph.snap_near)
+                            lid_clearance, finger_cutout, cutout_diameter, cutout_depth, graph.near, graph.snap_near,
+                            with_lid=with_lid)
     if ui:
         ui.summary(request)
     else:
@@ -315,6 +323,9 @@ def print_report(report):
     for binding in report.get("opening_interactions", []):
         print(f"Receiving opening {binding['opening']} on {binding['receiver']} follows folded "
               f"{binding['kind']} {', '.join(binding['structure'])}")
+    for binding in report.get("reinforcements", []):
+        print(f"Reinforcement return {binding['panel']} on {binding['receiver']}: "
+              f"{binding['angle']:+d}°, {binding['placement']}")
     structure = report.get("structure", {})
     if structure.get("status") == "inferred":
         if structure.get("layout") == "separate":
@@ -398,6 +409,9 @@ def main():
         if name in ("compile", "resize"):
             command.add_argument("--output", "-o", type=Path, required=True,
                                  help="Compiled SVG or DXF output (.dxf selects coloured millimetre DXF)")
+            command.add_argument("--with-lid", action="store_true", help="Create a matching detached telescoping lid from one tray")
+            if name == "compile":
+                command.add_argument("--lid-height", type=float, help="Generated lid wall height (requires --with-lid)")
             command.add_argument("--finger-cutout", nargs="?", const="one", choices=("none", "one", "opposing"),
                                  help="Add a finger opening on the top free flap, or on two opposing flaps")
             command.add_argument("--finger-cutout-diameter", type=float,
@@ -470,8 +484,13 @@ def main():
                     thickness=thickness, fold_offset=fold_offset, lid_clearance=lid_clearance,
                     finger_cutout=args.finger_cutout, finger_cutout_diameter=args.finger_cutout_diameter,
                     finger_cutout_depth=args.finger_cutout_depth, near=graph.near, snap_near=graph.snap_near)
+                request.with_lid = args.with_lid
                 report = request.execute(graph)
             else:
+                if args.with_lid:
+                    graph = graph.with_lid(lid_height=args.lid_height)
+                elif args.lid_height is not None:
+                    raise ValueError("compile --lid-height requires --with-lid; use resize for an existing lid")
                 report = graph.compile(args.output, thickness=thickness, fold_offset=fold_offset,
                                        lid_clearance=lid_clearance, finger_cutout=args.finger_cutout,
                                        finger_cutout_diameter=args.finger_cutout_diameter,

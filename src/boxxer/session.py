@@ -18,6 +18,7 @@ class ResizeRequest:
     finger_cutout_depth: float | None
     near: float
     snap_near: bool
+    with_lid: bool = False
 
     def execute(self, graph):
         from .cli import resize_and_compile
@@ -25,10 +26,12 @@ class ResizeRequest:
             graph, self.source, self.output, self.source_output, self.dimensions,
             thickness=self.thickness, fold_offset=self.fold_offset, lid_clearance=self.lid_clearance,
             finger_cutout=self.finger_cutout, finger_cutout_diameter=self.finger_cutout_diameter,
-            finger_cutout_depth=self.finger_cutout_depth)
+            finger_cutout_depth=self.finger_cutout_depth, with_lid=self.with_lid)
 
     def command(self):
         args = ["uv", "run", "boxxer", "resize", str(self.source)]
+        if self.with_lid:
+            args.append("--with-lid")
         for key, value in self.dimensions.items():
             if value is not None:
                 args.extend(["--"+key.replace("_", "-"), repr(value)])
@@ -51,4 +54,6 @@ class ResizeRequest:
                  ("Compiled output", str(self.output))]
         if self.source_output:
             rows.append(("Editable source", str(self.source_output)))
+        if self.with_lid:
+            rows.append(("Matching lid", "Same-design telescoping lid"))
         return rows

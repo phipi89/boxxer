@@ -96,9 +96,20 @@ class TerminalWizard:
                 raise Navigate(target)
             return "y" if value == "generate" else "n"
         elif "[Y/n]" in prompt or "[y/N]" in prompt:
-            value = self.ask(questionary.confirm(label, default="[Y/n]" in prompt), label)
+            accepted = self.values.get(label)
+            default_yes = accepted == "y" if label == "Create matching lid" and accepted is not None else "[Y/n]" in prompt
+            value = self.ask(questionary.confirm(label, default=default_yes), label)
             if value is not None:
-                return "y" if value else "n"
+                result = "y" if value else "n"
+                if label == "Create matching lid":
+                    if accepted is not None and accepted != result:
+                        for field in ("Height (mm)", "Base height (mm)", "Lid height (mm)", "Lid clearance (mm)"):
+                            self.values.pop(field, None)
+                        self.history = self.history[:self.history.index(label)+1]
+                    self.values[label] = result
+                    if label not in self.history:
+                        self.history.append(label)
+                return result
         elif "output" in label.lower() or label == "Source":
             value = self.text(label, default, path=True)
         else:
